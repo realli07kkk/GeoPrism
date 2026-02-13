@@ -1,0 +1,30 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "GeoPrism",
+  "outputfilename": "GeoPrism",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "realli07kkk",
+    "email": "real07li@foxmail.com"
+  },
+  "version": "0.1.0",
+  "wailsjsdir": "./frontend/src",
+  "info": {
+    "companyName": "GeoPrism",
+    "productName": "GeoPrism",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright 2025",
+    "comments": "DNS Query Tool"
+  },
+  "outputType": "app",
+  "mac": {
+    "icon": "build/icon.icns",
+    "identifier": "com.geoprism.app",
+    "sign": true,
+    "notarize": true,
+    "entitlements": "build/entitlements.plist"
+  }
+}
