@@ -1,0 +1,43 @@
+[[providers]]
+id = "cloudflare"
+name = "Cloudflare"
+protocol = "doh"
+endpoint = "https://cloudflare-dns.com/dns-query"
+server_name = "cloudflare-dns.com"
+port = 443
+timeout_ms = 5000
+enabled = true
+tags = ["default", "fast"]
+
+[[providers]]
+id = "google"
+name = "Google"
+protocol = "doh"
+endpoint = "https://dns.google/dns-query"
+server_name = "dns.google"
+port = 443
+timeout_ms = 5000
+enabled = true
+tags = ["default"]
+
+[[providers]]
+id = "quad9"
+name = "Quad9"
+protocol = "doh"
+endpoint = "https://dns.quad9.net/dns-query"
+server_name = "dns.quad9.net"
+port = 443
+timeout_ms = 5000
+enabled = true
+tags = ["default", "security"]
+
+[[providers]]
+id = "alidns"
+name = "AliDNS"
+protocol = "doh"
+endpoint = "https://dns.alidns.com/dns-query"
+server_name = "dns.alidns.com"
+port = 443
+timeout_ms = 5000
+enabled = true
+tags = ["default", "china"]

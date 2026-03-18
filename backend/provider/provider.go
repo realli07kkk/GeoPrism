@@ -1,12 +1,15 @@
 package provider
 
 import (
-	"encoding/json"
+	_ "embed"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
-	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/google/uuid"
 )
 
@@ -19,19 +22,22 @@ const (
 	ProtocolDNS Protocol = "dns" // 原生 DNS (UDP)
 )
 
+const providersConfigFileName = "providers.toml"
+
+//go:embed defaults/providers.toml
+var defaultProvidersTOML []byte
+
 // Provider DNS Provider 配置
 type Provider struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Protocol   Protocol  `json:"protocol"`
-	Endpoint   string    `json:"endpoint"`    // DoH URL 或 DoT 地址
-	ServerName string    `json:"server_name"` // DoT SNI
-	Port       int       `json:"port"`        // DoT 端口，默认 853
-	Timeout    int       `json:"timeout"`     // 超时毫秒
-	Enabled    bool      `json:"enabled"`
-	Tags       []string  `json:"tags"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID         string   `json:"id" toml:"id"`
+	Name       string   `json:"name" toml:"name"`
+	Protocol   Protocol `json:"protocol" toml:"protocol"`
+	Endpoint   string   `json:"endpoint" toml:"endpoint"`       // DoH URL
+	ServerName string   `json:"server_name" toml:"server_name"` // DoT / DNS 地址或 DoT SNI
+	Port       int      `json:"port" toml:"port"`               // 端口
+	Timeout    int      `json:"timeout" toml:"timeout_ms"`      // 超时毫秒
+	Enabled    bool     `json:"enabled" toml:"enabled"`
+	Tags       []string `json:"tags" toml:"tags"`
 }
 
 // ProviderStore Provider 存储管理
@@ -41,9 +47,13 @@ type ProviderStore struct {
 	providers  map[string]Provider
 }
 
+type providersTOML struct {
+	Providers []Provider `toml:"providers"`
+}
+
 // NewProviderStore 创建 Provider 存储
 func NewProviderStore(configDir string) (*ProviderStore, error) {
-	configPath := filepath.Join(configDir, "providers.json")
+	configPath := filepath.Join(configDir, providersConfigFileName)
 	store := &ProviderStore{
 		configPath: configPath,
 		providers:  make(map[string]Provider),
@@ -54,70 +64,33 @@ func NewProviderStore(configDir string) (*ProviderStore, error) {
 		return nil, err
 	}
 
-	// 加载现有配置
+	if err := store.ensureConfigFile(); err != nil {
+		return nil, err
+	}
+
 	if err := store.load(); err != nil {
-		if !os.IsNotExist(err) {
-			return nil, err
-		}
-		// 首次运行，加载默认 Provider
-		store.loadDefaults()
+		return nil, err
 	}
 
 	return store, nil
 }
 
-// loadDefaults 加载默认 Provider
-func (s *ProviderStore) loadDefaults() {
-	defaults := []Provider{
-		{
-			ID:         uuid.New().String(),
-			Name:       "Cloudflare",
-			Protocol:   ProtocolDoH,
-			Endpoint:   "https://cloudflare-dns.com/dns-query",
-			ServerName: "cloudflare-dns.com",
-			Port:       443,
-			Timeout:    5000,
-			Enabled:    true,
-			Tags:       []string{"default", "fast"},
-		},
-		{
-			ID:         uuid.New().String(),
-			Name:       "Google",
-			Protocol:   ProtocolDoH,
-			Endpoint:   "https://dns.google/dns-query",
-			ServerName: "dns.google",
-			Port:       443,
-			Timeout:    5000,
-			Enabled:    true,
-			Tags:       []string{"default"},
-		},
-		{
-			ID:         uuid.New().String(),
-			Name:       "Quad9",
-			Protocol:   ProtocolDoH,
-			Endpoint:   "https://dns.quad9.net/dns-query",
-			ServerName: "dns.quad9.net",
-			Port:       443,
-			Timeout:    5000,
-			Enabled:    true,
-			Tags:       []string{"default", "security"},
-		},
-		{
-			ID:         uuid.New().String(),
-			Name:       "AliDNS",
-			Protocol:   ProtocolDNS,
-			Endpoint:   "",
-			ServerName: "dns.aliyun.com",
-			Port:       53,
-			Timeout:    5000,
-			Enabled:    true,
-			Tags:       []string{"default", "china"},
-		},
+// ensureConfigFile 确保默认配置文件存在。
+func (s *ProviderStore) ensureConfigFile() error {
+	if _, err := os.Stat(s.configPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 
-	for _, p := range defaults {
-		s.providers[p.ID] = p
+	legacyJSONPath := filepath.Join(filepath.Dir(s.configPath), "providers.json")
+	if _, err := os.Stat(legacyJSONPath); err == nil {
+		fmt.Fprintf(os.Stderr, "警告: 发现旧版 providers.json，请手动迁移至 providers.toml；当前将写入默认配置\n")
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
 	}
+
+	return os.WriteFile(s.configPath, defaultProvidersTOML, 0644)
 }
 
 // load 从文件加载配置
@@ -126,14 +99,54 @@ func (s *ProviderStore) load() error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, &s.providers)
+
+	var cfg providersTOML
+	meta, err := toml.Decode(string(data), &cfg)
+	if err != nil {
+		return fmt.Errorf("解析 Provider TOML 失败: %w", err)
+	}
+	if undecoded := meta.Undecoded(); len(undecoded) > 0 {
+		return fmt.Errorf("Provider 配置包含未知字段: %s", joinUndecodedKeys(undecoded))
+	}
+
+	providers := make(map[string]Provider, len(cfg.Providers))
+	for idx, provider := range cfg.Providers {
+		p := normalizeProvider(provider)
+		if err := validateProvider(p); err != nil {
+			return fmt.Errorf("Provider[%d] 校验失败: %w", idx, err)
+		}
+		if _, exists := providers[p.ID]; exists {
+			return fmt.Errorf("Provider[%d] 校验失败: id %q 重复", idx, p.ID)
+		}
+		providers[p.ID] = p
+	}
+
+	s.providers = providers
+	return nil
 }
 
 // save 保存配置到文件
 func (s *ProviderStore) save() error {
-	data, err := json.MarshalIndent(s.providers, "", "  ")
+	ids := make([]string, 0, len(s.providers))
+	for id := range s.providers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	cfg := providersTOML{
+		Providers: make([]Provider, 0, len(ids)),
+	}
+	for _, id := range ids {
+		cfg.Providers = append(cfg.Providers, s.providers[id])
+	}
+
+	data, err := toml.Marshal(cfg)
 	if err != nil {
 		return err
+	}
+
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		data = append(data, '\n')
 	}
 	return os.WriteFile(s.configPath, data, 0644)
 }
@@ -163,9 +176,11 @@ func (s *ProviderStore) Upsert(p Provider) error {
 	defer s.mu.Unlock()
 	if p.ID == "" {
 		p.ID = uuid.New().String()
-		p.CreatedAt = time.Now()
 	}
-	p.UpdatedAt = time.Now()
+	p = normalizeProvider(p)
+	if err := validateProvider(p); err != nil {
+		return err
+	}
 	s.providers[p.ID] = p
 	return s.save()
 }
@@ -196,17 +211,15 @@ func (s *ProviderStore) GetEnabled() []Provider {
 
 // ProviderView 前端展示用的 Provider 结构
 type ProviderView struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Protocol   Protocol  `json:"protocol"`
-	Endpoint   string    `json:"endpoint"`
-	ServerName string    `json:"server_name"`
-	Port       int       `json:"port"`
-	Timeout    int       `json:"timeout"`
-	Enabled    bool      `json:"enabled"`
-	Tags       []string  `json:"tags"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Protocol   Protocol `json:"protocol"`
+	Endpoint   string   `json:"endpoint"`
+	ServerName string   `json:"server_name"`
+	Port       int      `json:"port"`
+	Timeout    int      `json:"timeout"`
+	Enabled    bool     `json:"enabled"`
+	Tags       []string `json:"tags"`
 }
 
 // ToView 转换为前端视图
@@ -221,7 +234,52 @@ func (p *Provider) ToView() ProviderView {
 		Timeout:    p.Timeout,
 		Enabled:    p.Enabled,
 		Tags:       p.Tags,
-		CreatedAt:  p.CreatedAt,
-		UpdatedAt:  p.UpdatedAt,
 	}
+}
+
+// normalizeProvider 规范化 Provider 文本字段。
+func normalizeProvider(p Provider) Provider {
+	p.ID = strings.TrimSpace(p.ID)
+	p.Name = strings.TrimSpace(p.Name)
+	p.Endpoint = strings.TrimSpace(p.Endpoint)
+	p.ServerName = strings.TrimSpace(p.ServerName)
+	return p
+}
+
+// validateProvider 校验 Provider 配置。
+func validateProvider(p Provider) error {
+	if p.ID == "" {
+		return fmt.Errorf("id 不能为空")
+	}
+	if p.Name == "" {
+		return fmt.Errorf("name 不能为空")
+	}
+	switch p.Protocol {
+	case ProtocolDoH, ProtocolDoT, ProtocolDNS:
+	default:
+		return fmt.Errorf("protocol %q 非法", p.Protocol)
+	}
+	if p.Port <= 0 {
+		return fmt.Errorf("port 必须大于 0")
+	}
+	if p.Timeout <= 0 {
+		return fmt.Errorf("timeout_ms 必须大于 0")
+	}
+	if p.Protocol == ProtocolDoH && p.Endpoint == "" {
+		return fmt.Errorf("protocol 为 doh 时 endpoint 不能为空")
+	}
+	if (p.Protocol == ProtocolDoT || p.Protocol == ProtocolDNS) && p.ServerName == "" {
+		return fmt.Errorf("protocol 为 %s 时 server_name 不能为空", p.Protocol)
+	}
+	return nil
+}
+
+// joinUndecodedKeys 拼接未识别的 TOML 字段。
+func joinUndecodedKeys(keys []toml.Key) string {
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key.String())
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }

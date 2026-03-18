@@ -2,12 +2,9 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 )
-
-const legacyAppDirName = "GeoPrism"
 
 // getUserHomeDir 获取用户主目录。
 func getUserHomeDir() (string, error) {
@@ -48,16 +45,7 @@ func getIPDBDir() (string, error) {
 	return filepath.Join(appRootDir, "ipdb"), nil
 }
 
-// getLegacyConfigDir 获取旧版配置目录。
-func getLegacyConfigDir() (string, error) {
-	home, err := getUserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, "Library", "Application Support", legacyAppDirName, "config"), nil
-}
-
-// ensureConfigDirReady 确保新配置目录存在，并按需迁移旧版配置。
+// ensureConfigDirReady 确保配置目录存在。
 func ensureConfigDirReady() (string, error) {
 	configDir, err := getConfigDir()
 	if err != nil {
@@ -66,56 +54,5 @@ func ensureConfigDirReady() (string, error) {
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return "", fmt.Errorf("创建配置目录失败: %w", err)
 	}
-
-	newConfigPath := filepath.Join(configDir, "providers.json")
-	if fileExists(newConfigPath) {
-		return configDir, nil
-	}
-
-	legacyConfigDir, err := getLegacyConfigDir()
-	if err != nil {
-		return "", err
-	}
-
-	legacyConfigPath := filepath.Join(legacyConfigDir, "providers.json")
-	if !fileExists(legacyConfigPath) {
-		return configDir, nil
-	}
-
-	if err := copyFile(legacyConfigPath, newConfigPath); err != nil {
-		return "", fmt.Errorf("迁移旧版 Provider 配置失败: %w", err)
-	}
-
 	return configDir, nil
-}
-
-// fileExists 判断文件或目录是否存在。
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-// copyFile 复制文件内容。
-func copyFile(src, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		dstFile.Close()
-		return err
-	}
-
-	if err := dstFile.Close(); err != nil {
-		return err
-	}
-
-	return nil
 }

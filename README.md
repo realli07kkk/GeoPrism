@@ -7,7 +7,7 @@ GeoPrism 是一个 macOS 本地运行的 DNS 查询 CLI 工具，使用纯 Go �
 - 已完成（M1）：域名查询（A/AAAA/CNAME/TXT/NS/MX/SOA）
 - 已完成（M1）：多 Provider 并行查询
 - 已完成（M1）：DoH / DoT / DNS(UDP) 支持
-- 已完成（M1）：Provider 管理（CRUD + 默认模板）
+- 已完成（M1）：Provider 配置加载、列举、连通性测试与默认模板
 - 已完成（M2）：离线 IP 库导入与解析匹配
 - 待实现：Provider 导入/导出
 - 待实现：IP 库下载更新（M3）
@@ -73,9 +73,12 @@ backend/
 
 ```text
 ~/.geoprism/
-  config/     # providers.json
+  config/     # providers.toml
   ipdb/       # Pebble 离线 IP 库
 ```
 
-兼容性说明：
-- 若新路径下还没有 `providers.json`，程序会在启动时从旧路径 `~/Library/Application Support/GeoPrism/config/providers.json` 复制已有配置。
+Provider 配置说明：
+- 程序默认从 `~/.geoprism/config/providers.toml` 读取 Provider 配置。
+- 若文件不存在，程序会在首次启动时自动写入默认模板。
+- 配置文件使用 `[[providers]]` 数组表格式，每个 Provider 必须显式声明 `id`。
+- 旧的 `providers.json` 不再读取，也不会自动迁移；若检测到旧文件，程序会输出手动迁移警告。

@@ -3,6 +3,7 @@ module geoprism
 go 1.23
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/cockroachdb/pebble/v2 v2.1.4
 	github.com/google/uuid v1.6.0
 	github.com/miekg/dns v1.1.62
