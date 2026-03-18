@@ -33,6 +33,11 @@ geoprism query example.com -t AAAA
 # 指定 Provider
 geoprism query example.com -p cloudflare,google
 
+# JSON 格式输出（供 AI agent 或脚本使用）
+geoprism -j providers
+geoprism query example.com -j
+geoprism example.com --json
+
 # 导入离线 IP 库
 geoprism ipdb build --csv /absolute/path/ipinfo_lite.csv
 
@@ -78,6 +83,14 @@ backend/
 - `query`、`providers`、`test` 在 TTY 下使用增强表格渲染
 - 非 TTY 输出保持纯文本表格协议，便于重定向和脚本处理
 - `IP 匹配详情` 在 TTY 与非 TTY 下都保持表格语义，只在样式上有差异
+
+### JSON 输出模式
+
+使用 `-j` / `--json` 参数输出 JSON 格式：
+
+- 支持：`query`、`providers`、`test`（前导或后置参数均可）
+- 不支持：`ipdb`（会输出警告并忽略）
+- 错误信息输出到 stderr，格式为 `{"error":"..."}`
 
 ## 数据目录
 

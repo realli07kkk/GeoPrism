@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"geoprism/render"
 )
 
 const usage = `GeoPrism - DNS 查询工具
@@ -10,6 +12,9 @@ const usage = `GeoPrism - DNS 查询工具
 用法:
   geoprism <command> [flags]
   geoprism <domain>              快捷查询，等价于 geoprism query <domain>
+
+输出格式:
+  -j, --json                     JSON 格式输出（支持 query/providers/test，不支持 ipdb）
 
 命令:
   query       查询域名 DNS 记录
@@ -20,6 +25,7 @@ const usage = `GeoPrism - DNS 查询工具
 
 示例:
   geoprism example.com
+  geoprism example.com -j
   geoprism query example.com -t AAAA
   geoprism query example.com -p cloudflare,google
   geoprism ipdb build --csv /absolute/path/ipinfo_lite.csv
@@ -34,6 +40,18 @@ var knownCommands = map[string]bool{
 	"providers": true,
 	"test":      true,
 	"help":      true,
+}
+
+// 支持 JSON 输出的命令
+var jsonSupportedCommands = map[string]bool{
+	"query":     true,
+	"providers": true,
+	"test":      true,
+}
+
+// isGlobalFlag 判断是否是全局 flag
+func isGlobalFlag(arg string) bool {
+	return arg == "-j" || arg == "--json"
 }
 
 func main() {
@@ -56,23 +74,55 @@ func main() {
 		}
 	}()
 
-	cmd := args[0]
+	// 先剥离前导的全局 flag（只处理开头的连续 flag）
+	outputJSON := false
+	i := 0
+	for i < len(args) && isGlobalFlag(args[i]) {
+		outputJSON = true
+		i++
+	}
+
+	// 检查前导 -j 是否被不支持 JSON 的命令使用
+	if outputJSON && i < len(args) {
+		cmd := args[i]
+		if knownCommands[cmd] && !jsonSupportedCommands[cmd] {
+			fmt.Fprintf(os.Stderr, "警告: %s 命令不支持 JSON 输出，-j 将被忽略\n", cmd)
+			outputJSON = false
+		}
+	}
+
+	// 剩余参数
+	remaining := args[i:]
+
+	if len(remaining) == 0 {
+		// 只有全局 flag，没有命令或域名
+		fmt.Println(usage)
+		os.Exit(0)
+	}
+
+	// 设置全局输出模式
+	if outputJSON {
+		app.SetOutputMode(render.OutputJSON)
+	}
+
+	cmd := remaining[0]
 
 	// 如果不是已知命令，当作域名进行快捷查询
 	if !knownCommands[cmd] {
-		app.runQuery(args)
+		app.runQuery(remaining)
 		return
 	}
 
+	// 已知命令：传递剩余参数到子命令
 	switch cmd {
 	case "query":
-		app.runQuery(args[1:])
+		app.runQuery(remaining[1:])
 	case "ipdb":
-		app.runIPDB(args[1:])
+		app.runIPDB(remaining[1:])
 	case "providers":
-		app.runProviders()
+		app.runProviders(remaining[1:])
 	case "test":
-		app.runTest(args[1:])
+		app.runTest(remaining[1:])
 	case "help":
 		fmt.Println(usage)
 	}

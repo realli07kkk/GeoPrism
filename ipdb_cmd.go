@@ -36,7 +36,14 @@ func (a *App) runIPDB(args []string) {
 func (a *App) runIPDBBuild(args []string) {
 	fs := flag.NewFlagSet("ipdb build", flag.ExitOnError)
 	csvPath := fs.String("csv", "", "离线 IP CSV 文件绝对路径")
+	// 接受但不支持 -j/--json
+	jsonFlag := fs.Bool("j", false, "（不支持）")
+	fs.BoolVar(jsonFlag, "json", false, "（不支持）")
 	fs.Parse(args)
+
+	if *jsonFlag {
+		fmt.Fprintln(os.Stderr, "警告: ipdb 命令不支持 JSON 输出，-j 将被忽略")
+	}
 
 	if *csvPath == "" {
 		fmt.Fprintln(os.Stderr, "错误: 请通过 --csv 指定 CSV 文件路径")

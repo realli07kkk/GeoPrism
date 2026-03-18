@@ -21,7 +21,9 @@ GeoPrism/
 ├── paths.go             # ~/.geoprism 路径管理
 ├── ipdb_cmd.go          # ipdb build 子命令
 ├── ip_match.go          # DNS 结果中的 IP 匹配输出
+├── cli_test.go          # CLI 集成测试
 ├── render/              # CLI 表格渲染与 TTY 样式增强
+│   └── output.go        # 输出模式（Text/JSON）与统一 JSON 输出
 ├── go.mod               # Go 依赖
 ├── backend/             # Go 后端模块
 │   ├── resolver/        # DoH/DoT/DNS 查询与归一化
@@ -85,3 +87,13 @@ Provider 配置说明：
 - `geoprism providers` 与 `geoprism test` 在 TTY 下同样使用增强表格渲染；非 TTY 保持纯文本输出
 - 若本地存在可用离线库，会在 DNS 结果后追加 `IP 匹配详情`；TTY 与非 TTY 都保持表格语义
 - 若本地不存在离线库，仅打印告警并继续 DNS 查询，不中断主流程
+
+### JSON 输出
+
+支持 `-j` / `--json` 参数，供 AI agent 或脚本消费：
+
+- 支持的命令：`query`、`providers`、`test`
+- 不支持的命令：`ipdb`（使用 `-j` 时会输出警告并忽略）
+- 前导和后置参数都支持：`geoprism -j providers` 或 `geoprism providers -j`
+- 快捷查询也支持：`geoprism example.com -j`
+- 错误信息在 JSON 模式下输出到 stderr，格式为 `{"error":"..."}`

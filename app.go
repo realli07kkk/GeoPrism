@@ -23,6 +23,7 @@ type App struct {
 
 	ipdbWarningShown bool
 	ipdbInitialized  bool
+	outputMode       render.OutputMode
 }
 
 // NewApp 创建并初始化 App
@@ -57,6 +58,22 @@ func (a *App) Close() error {
 		return nil
 	}
 	return a.ipdbStore.Close()
+}
+
+// SetOutputMode 设置输出模式。
+func (a *App) SetOutputMode(mode render.OutputMode) {
+	if a != nil {
+		a.outputMode = mode
+	}
+}
+
+// writeError 统一输出错误信息，JSON 模式下输出 JSON，文本模式下输出纯文本。
+func (a *App) writeError(message string) {
+	if a != nil && a.outputMode == render.OutputJSON {
+		render.WriteJSON(os.Stderr, map[string]string{"error": message})
+	} else {
+		fmt.Fprintf(os.Stderr, "错误: %s\n", message)
+	}
 }
 
 // ensureIPDBStore 按需初始化离线 IP 库。
@@ -104,11 +121,16 @@ func (a *App) runQuery(args []string) {
 	providerFlag := fs.String("p", "", "Provider 名称，逗号分隔")
 	fs.StringVar(providerFlag, "provider", "", "Provider 名称，逗号分隔")
 	timeout := fs.Int("timeout", 5000, "超时毫秒")
+	jsonFlag := fs.Bool("j", false, "JSON 格式输出")
+	fs.BoolVar(jsonFlag, "json", false, "JSON 格式输出")
 	fs.Parse(reorderArgs(args))
 
+	if *jsonFlag {
+		a.outputMode = render.OutputJSON
+	}
+
 	if fs.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "错误: 请指定要查询的域名")
-		fmt.Fprintln(os.Stderr, "用法: geoprism query <domain> [-t TYPE] [-p PROVIDER]")
+		a.writeError("请指定要查询的域名")
 		os.Exit(1)
 	}
 
@@ -120,7 +142,7 @@ func (a *App) runQuery(args []string) {
 		names := strings.Split(*providerFlag, ",")
 		providerIDs = a.matchProvidersByName(names)
 		if len(providerIDs) == 0 {
-			fmt.Fprintf(os.Stderr, "错误: 未找到匹配的 Provider: %s\n", *providerFlag)
+			a.writeError("未找到匹配的 Provider: " + *providerFlag)
 			os.Exit(1)
 		}
 	}
@@ -132,18 +154,38 @@ func (a *App) runQuery(args []string) {
 		Timeout:     *timeout,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "查询失败: %v\n", err)
+		a.writeError(err.Error())
 		os.Exit(1)
 	}
+
 	a.printIPDBWarning()
+
+	if a.outputMode == render.OutputJSON {
+		render.WriteJSON(os.Stdout, result)
+		return
+	}
 
 	render.WriteQueryResult(os.Stdout, result)
 	render.WriteIPMatches(os.Stdout, result)
 }
 
 // runProviders 列出所有 Provider
-func (a *App) runProviders() {
+func (a *App) runProviders(args []string) {
+	fs := flag.NewFlagSet("providers", flag.ExitOnError)
+	jsonFlag := fs.Bool("j", false, "JSON 格式输出")
+	fs.BoolVar(jsonFlag, "json", false, "JSON 格式输出")
+	fs.Parse(args)
+
+	if *jsonFlag {
+		a.outputMode = render.OutputJSON
+	}
+
 	providers := a.ListProviders()
+
+	if a.outputMode == render.OutputJSON {
+		render.WriteJSON(os.Stdout, providers)
+		return
+	}
 
 	if len(providers) == 0 {
 		fmt.Println("暂无 Provider")
@@ -157,7 +199,13 @@ func (a *App) runProviders() {
 func (a *App) runTest(args []string) {
 	fs := flag.NewFlagSet("test", flag.ExitOnError)
 	all := fs.Bool("all", false, "测试所有 Provider")
+	jsonFlag := fs.Bool("j", false, "JSON 格式输出")
+	fs.BoolVar(jsonFlag, "json", false, "JSON 格式输出")
 	fs.Parse(args)
+
+	if *jsonFlag {
+		a.outputMode = render.OutputJSON
+	}
 
 	var testIDs []string
 
@@ -172,8 +220,7 @@ func (a *App) runTest(args []string) {
 	}
 
 	if len(testIDs) == 0 {
-		fmt.Fprintln(os.Stderr, "错误: 请指定 Provider 名称或使用 --all")
-		fmt.Fprintln(os.Stderr, "用法: geoprism test <name> 或 geoprism test --all")
+		a.writeError("请指定 Provider 名称或使用 --all")
 		os.Exit(1)
 	}
 
@@ -187,13 +234,14 @@ func (a *App) runTest(args []string) {
 	for _, id := range testIDs {
 		health, err := a.TestProvider(id)
 		name := nameMap[id]
-		if err != nil {
-			results = append(results, providerTestResult{Name: name, Err: err})
-			continue
-		}
-
-		results = append(results, providerTestResult{Name: name, Health: health})
+		results = append(results, newProviderTestResult(name, health, err))
 	}
+
+	if a.outputMode == render.OutputJSON {
+		render.WriteJSON(os.Stdout, results)
+		return
+	}
+
 	render.WriteTestResults(os.Stdout, results)
 }
 
@@ -323,9 +371,27 @@ func (p providerRenderList) ProviderAt(i int) render.ProviderSource {
 }
 
 type providerTestResult struct {
-	Name   string
-	Health ProviderHealth
-	Err    error
+	Name      string `json:"provider_name"`
+	Success   bool   `json:"success"`
+	LatencyMs int64  `json:"latency_ms"`
+	Message   string `json:"message"`
+
+	// 内部字段，用于区分 ERROR（执行错误）和 FAIL（探测失败）
+	hasExecError bool
+}
+
+// newProviderTestResult 构造测试结果。
+func newProviderTestResult(name string, health ProviderHealth, err error) providerTestResult {
+	r := providerTestResult{Name: name}
+	if err != nil {
+		r.hasExecError = true
+		r.Message = err.Error()
+	} else {
+		r.Success = health.Success
+		r.LatencyMs = health.LatencyMs
+		r.Message = health.Message
+	}
+	return r
 }
 
 // NameText 返回 Provider 名称。
@@ -334,30 +400,27 @@ func (r providerTestResult) NameText() string {
 }
 
 // StatusText 返回测试状态。
+// ERROR: 执行出错（如 Provider 不存在）
+// FAIL: 探测失败（如 DNS 返回错误响应）
+// OK: 成功
 func (r providerTestResult) StatusText() string {
-	if r.Err != nil {
+	if r.hasExecError {
 		return "ERROR"
 	}
-	if r.Health.Success {
-		return "OK"
+	if !r.Success {
+		return "FAIL"
 	}
-	return "FAIL"
+	return "OK"
 }
 
 // LatencyMsValue 返回延迟。
 func (r providerTestResult) LatencyMsValue() int64 {
-	if r.Err != nil {
-		return 0
-	}
-	return r.Health.LatencyMs
+	return r.LatencyMs
 }
 
 // MessageText 返回结果说明。
 func (r providerTestResult) MessageText() string {
-	if r.Err != nil {
-		return r.Err.Error()
-	}
-	return r.Health.Message
+	return r.Message
 }
 
 type providerTestResultList []providerTestResult
