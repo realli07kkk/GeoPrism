@@ -5,10 +5,10 @@ import (
 	"io"
 	"net"
 	"os"
-	"text/tabwriter"
 
 	"geoprism/backend/ipdb"
 	"geoprism/backend/resolver"
+	"geoprism/render"
 )
 
 // IPMatchView 表示 DNS 查询结果里的单条 IP 匹配详情。
@@ -18,6 +18,66 @@ type IPMatchView struct {
 	IP         string `json:"ip"`
 	Matched    bool   `json:"matched"`
 	ipdb.Record
+}
+
+// ProviderName 返回 Provider 名称。
+func (m IPMatchView) ProviderName() string {
+	return m.Provider
+}
+
+// RecordTypeText 返回记录类型。
+func (m IPMatchView) RecordTypeText() string {
+	return m.RecordType
+}
+
+// IPText 返回 IP 地址。
+func (m IPMatchView) IPText() string {
+	return m.IP
+}
+
+// MatchedState 返回是否命中离线库。
+func (m IPMatchView) MatchedState() bool {
+	return m.Matched
+}
+
+// NetworkText 返回网段。
+func (m IPMatchView) NetworkText() string {
+	return m.Network
+}
+
+// CountryText 返回国家名称。
+func (m IPMatchView) CountryText() string {
+	return m.Country
+}
+
+// CountryCodeText 返回国家代码。
+func (m IPMatchView) CountryCodeText() string {
+	return m.CountryCode
+}
+
+// ContinentText 返回大洲名称。
+func (m IPMatchView) ContinentText() string {
+	return m.Continent
+}
+
+// ContinentCodeText 返回大洲代码。
+func (m IPMatchView) ContinentCodeText() string {
+	return m.ContinentCode
+}
+
+// ASNText 返回 ASN。
+func (m IPMatchView) ASNText() string {
+	return m.ASN
+}
+
+// ASNameText 返回 AS 名称。
+func (m IPMatchView) ASNameText() string {
+	return m.ASName
+}
+
+// ASDomainText 返回 AS 域名。
+func (m IPMatchView) ASDomainText() string {
+	return m.ASDomain
 }
 
 // printIPDBWarning 按需输出离线库告警。
@@ -61,40 +121,21 @@ func (a *App) collectIPMatches(answers []QueryAnswer) []IPMatchView {
 	return matches
 }
 
-// writeIPMatches 输出 IP 匹配详情表格。
-func writeIPMatches(output io.Writer, matches []IPMatchView) {
-	if len(matches) == 0 {
-		return
-	}
+type ipMatchList []IPMatchView
 
-	fmt.Fprint(output, "\nIP 匹配详情\n\n")
+// MatchCount 返回匹配数量。
+func (m ipMatchList) MatchCount() int {
+	return len(m)
+}
 
-	w := tabwriter.NewWriter(output, 0, 0, 4, ' ', 0)
-	fmt.Fprintln(w, "Provider\tType\tIP\tMatch\tNetwork\tCountry\tCountryCode\tContinent\tContinentCode\tASN\tASName\tASDomain")
-	fmt.Fprintln(w, "--------\t----\t--\t-----\t-------\t-------\t-----------\t---------\t-------------\t---\t------\t--------")
+// MatchAt 返回指定匹配结果。
+func (m ipMatchList) MatchAt(i int) render.IPMatchSource {
+	return m[i]
+}
 
-	for _, match := range matches {
-		matchStatus := "MISS"
-		if match.Matched {
-			matchStatus = "HIT"
-		}
-
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			match.Provider,
-			match.RecordType,
-			match.IP,
-			matchStatus,
-			match.Network,
-			match.Country,
-			match.CountryCode,
-			match.Continent,
-			match.ContinentCode,
-			match.ASN,
-			match.ASName,
-			match.ASDomain,
-		)
-	}
-	w.Flush()
+// writeIPMatches 保留旧测试入口，但不再复制展示 DTO。
+func writeIPMatches(w io.Writer, matches []IPMatchView) {
+	render.WriteIPMatches(w, ipMatchList(matches))
 }
 
 // extractAnswerIPs 提取所有可识别的 IP 记录。

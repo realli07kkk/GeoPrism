@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 
 	"geoprism/backend/ipdb"
 	"geoprism/backend/provider"
 	"geoprism/backend/resolver"
+	"geoprism/render"
 )
 
 // App 结构体
@@ -137,44 +137,8 @@ func (a *App) runQuery(args []string) {
 	}
 	a.printIPDBWarning()
 
-	// 输出结果
-	fmt.Printf("\n查询: %s (%s)\n\n", result.Domain, result.RecordType)
-
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 4, ' ', 0)
-	fmt.Fprintln(w, "Provider\t状态\t延迟\t记录\tTTL")
-	fmt.Fprintln(w, "--------\t------\t----\t----------------\t---")
-
-	for _, ans := range result.Answers {
-		if !ans.Success {
-			errMsg := ans.Error
-			if errMsg == "" {
-				errMsg = ans.RCodeName
-			}
-			fmt.Fprintf(w, "%s\tERROR\t-\t%s\t-\n", ans.Provider, errMsg)
-			continue
-		}
-
-		if len(ans.Answers) == 0 {
-			fmt.Fprintf(w, "%s\t%s\t%dms\t-\t-\n",
-				ans.Provider, ans.RCodeName, ans.RTTMs)
-			continue
-		}
-
-		// 第一条记录显示 Provider 名称
-		fmt.Fprintf(w, "%s\t%s\t%dms\t%s\t%d\n",
-			ans.Provider, ans.RCodeName, ans.RTTMs,
-			extractRecordData(ans.Answers[0].Data), ans.Answers[0].TTL)
-
-		// 后续记录 Provider 列留空
-		for _, r := range ans.Answers[1:] {
-			fmt.Fprintf(w, "\t\t\t%s\t%d\n",
-				extractRecordData(r.Data), r.TTL)
-		}
-	}
-	w.Flush()
-
-	fmt.Printf("\n总耗时: %dms\n", result.TotalTime)
-	writeIPMatches(os.Stdout, result.IPMatches)
+	render.WriteQueryResult(os.Stdout, result)
+	render.WriteIPMatches(os.Stdout, result)
 }
 
 // runProviders 列出所有 Provider
@@ -186,18 +150,7 @@ func (a *App) runProviders() {
 		return
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 4, ' ', 0)
-	fmt.Fprintln(w, "名称\t协议\t端点\t启用")
-	fmt.Fprintln(w, "--------\t------\t----\t----")
-
-	for _, p := range providers {
-		enabled := "是"
-		if !p.Enabled {
-			enabled = "否"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.Name, p.Protocol, p.Endpoint, enabled)
-	}
-	w.Flush()
+	render.WriteProviders(os.Stdout, providerRenderList(providers))
 }
 
 // runTest 测试 Provider 连通性
@@ -230,25 +183,18 @@ func (a *App) runTest(args []string) {
 		nameMap[p.ID] = p.Name
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 4, ' ', 0)
-	fmt.Fprintln(w, "Provider\t状态\t延迟\t信息")
-	fmt.Fprintln(w, "--------\t------\t----\t----")
-
+	results := make(providerTestResultList, 0, len(testIDs))
 	for _, id := range testIDs {
 		health, err := a.TestProvider(id)
 		name := nameMap[id]
 		if err != nil {
-			fmt.Fprintf(w, "%s\tERROR\t-\t%v\n", name, err)
+			results = append(results, providerTestResult{Name: name, Err: err})
 			continue
 		}
 
-		status := "OK"
-		if !health.Success {
-			status = "FAIL"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%dms\t%s\n", name, status, health.LatencyMs, health.Message)
+		results = append(results, providerTestResult{Name: name, Health: health})
 	}
-	w.Flush()
+	render.WriteTestResults(os.Stdout, results)
 }
 
 // reorderArgs 将 flag 参数移到位置参数前面
@@ -342,6 +288,90 @@ type ProviderHealth struct {
 	LatencyMs  int64  `json:"latency_ms"`
 }
 
+type providerRenderItem provider.ProviderView
+
+// NameText 返回 Provider 名称。
+func (p providerRenderItem) NameText() string {
+	return p.Name
+}
+
+// ProtocolText 返回协议名。
+func (p providerRenderItem) ProtocolText() string {
+	return string(p.Protocol)
+}
+
+// EndpointText 返回端点。
+func (p providerRenderItem) EndpointText() string {
+	return p.Endpoint
+}
+
+// EnabledState 返回启用状态。
+func (p providerRenderItem) EnabledState() bool {
+	return p.Enabled
+}
+
+type providerRenderList []provider.ProviderView
+
+// ProviderCount 返回 Provider 数量。
+func (p providerRenderList) ProviderCount() int {
+	return len(p)
+}
+
+// ProviderAt 返回指定 Provider。
+func (p providerRenderList) ProviderAt(i int) render.ProviderSource {
+	return providerRenderItem(p[i])
+}
+
+type providerTestResult struct {
+	Name   string
+	Health ProviderHealth
+	Err    error
+}
+
+// NameText 返回 Provider 名称。
+func (r providerTestResult) NameText() string {
+	return r.Name
+}
+
+// StatusText 返回测试状态。
+func (r providerTestResult) StatusText() string {
+	if r.Err != nil {
+		return "ERROR"
+	}
+	if r.Health.Success {
+		return "OK"
+	}
+	return "FAIL"
+}
+
+// LatencyMsValue 返回延迟。
+func (r providerTestResult) LatencyMsValue() int64 {
+	if r.Err != nil {
+		return 0
+	}
+	return r.Health.LatencyMs
+}
+
+// MessageText 返回结果说明。
+func (r providerTestResult) MessageText() string {
+	if r.Err != nil {
+		return r.Err.Error()
+	}
+	return r.Health.Message
+}
+
+type providerTestResultList []providerTestResult
+
+// ResultCount 返回结果数量。
+func (r providerTestResultList) ResultCount() int {
+	return len(r)
+}
+
+// ResultAt 返回指定结果。
+func (r providerTestResultList) ResultAt(i int) render.TestResultSource {
+	return r[i]
+}
+
 // TestProvider 测试 Provider 连通性
 func (a *App) TestProvider(id string) (ProviderHealth, error) {
 	p, ok := a.providerStore.Get(id)
@@ -388,6 +418,46 @@ type QueryAnswer struct {
 	Success    bool                 `json:"success"`
 }
 
+// ProviderName 返回 Provider 名称。
+func (a QueryAnswer) ProviderName() string {
+	return a.Provider
+}
+
+// SuccessState 返回查询是否成功。
+func (a QueryAnswer) SuccessState() bool {
+	return a.Success
+}
+
+// RCodeNameText 返回 RCode 名称。
+func (a QueryAnswer) RCodeNameText() string {
+	return a.RCodeName
+}
+
+// RTTMsValue 返回耗时。
+func (a QueryAnswer) RTTMsValue() int64 {
+	return a.RTTMs
+}
+
+// ErrorText 返回错误信息。
+func (a QueryAnswer) ErrorText() string {
+	return a.Error
+}
+
+// RecordCount 返回记录数量。
+func (a QueryAnswer) RecordCount() int {
+	return len(a.Answers)
+}
+
+// RecordDataAt 返回指定记录的展示值。
+func (a QueryAnswer) RecordDataAt(i int) string {
+	return extractRecordData(a.Answers[i].Data)
+}
+
+// RecordTTLAt 返回指定记录的 TTL。
+func (a QueryAnswer) RecordTTLAt(i int) uint32 {
+	return a.Answers[i].TTL
+}
+
 // QueryResultView 查询结果视图
 type QueryResultView struct {
 	Domain     string        `json:"domain"`
@@ -395,6 +465,41 @@ type QueryResultView struct {
 	Answers    []QueryAnswer `json:"answers"`
 	IPMatches  []IPMatchView `json:"ip_matches"`
 	TotalTime  int64         `json:"total_time_ms"`
+}
+
+// DomainText 返回查询域名。
+func (v QueryResultView) DomainText() string {
+	return v.Domain
+}
+
+// RecordTypeText 返回记录类型。
+func (v QueryResultView) RecordTypeText() string {
+	return v.RecordType
+}
+
+// TotalTimeMs 返回总耗时。
+func (v QueryResultView) TotalTimeMs() int64 {
+	return v.TotalTime
+}
+
+// AnswerCount 返回 Provider 响应数量。
+func (v QueryResultView) AnswerCount() int {
+	return len(v.Answers)
+}
+
+// AnswerAt 返回指定 Provider 响应。
+func (v QueryResultView) AnswerAt(i int) render.QueryAnswerSource {
+	return v.Answers[i]
+}
+
+// MatchCount 返回 IP 匹配数量。
+func (v QueryResultView) MatchCount() int {
+	return len(v.IPMatches)
+}
+
+// MatchAt 返回指定 IP 匹配结果。
+func (v QueryResultView) MatchAt(i int) render.IPMatchSource {
+	return v.IPMatches[i]
 }
 
 // QueryDomain 执行域名查询

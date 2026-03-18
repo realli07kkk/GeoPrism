@@ -10,6 +10,7 @@ GeoPrism 是一个 macOS 本地运行的 DNS 查询 CLI 工具，使用纯 Go �
 - **CLI**: 标准库 `os.Args` + `flag.NewFlagSet`，无第三方框架
 - **Provider 配置**: `github.com/BurntSushi/toml`
 - **离线 IP 存储**: `github.com/cockroachdb/pebble/v2`
+- **终端渲染**: `github.com/charmbracelet/lipgloss` + `github.com/mattn/go-isatty`
 
 ## 项目结构
 
@@ -20,14 +21,16 @@ GeoPrism/
 ├── paths.go             # ~/.geoprism 路径管理
 ├── ipdb_cmd.go          # ipdb build 子命令
 ├── ip_match.go          # DNS 结果中的 IP 匹配输出
+├── render/              # CLI 表格渲染与 TTY 样式增强
 ├── go.mod               # Go 依赖
 ├── backend/             # Go 后端模块
 │   ├── resolver/        # DoH/DoT/DNS 查询与归一化
 │   ├── provider/        # Provider TOML 配置管理
 │   ├── ipdb/            # 离线 IP 库构建、编码与查询
-│   ├── updater/         # 预留目录（M3）
-│   └── storage/         # 预留目录（M4）
 ```
+
+说明：
+- `M3` / `M4` 对应的 `backend/updater`、`backend/storage` 当前尚未创建，文档只保留里程碑说明，不再把它们写成现有目录。
 
 ## 开发命令
 
@@ -76,8 +79,9 @@ Provider 配置说明：
 
 ## 当前 CLI 行为
 
-- `geoprism query ...` 保留原有 DNS 结果表格
+- `geoprism query ...` 在 TTY 下使用增强表格渲染；非 TTY 保持原有纯文本表格协议
 - `geoprism providers` 列出当前 TOML 配置中的 Provider
 - `geoprism test --all|<name>` 测试 Provider 连通性
-- 若本地存在可用离线库，会在 DNS 结果后追加 `IP 匹配详情`
+- `geoprism providers` 与 `geoprism test` 在 TTY 下同样使用增强表格渲染；非 TTY 保持纯文本输出
+- 若本地存在可用离线库，会在 DNS 结果后追加 `IP 匹配详情`；TTY 与非 TTY 都保持表格语义
 - 若本地不存在离线库，仅打印告警并继续 DNS 查询，不中断主流程
