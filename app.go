@@ -1,13 +1,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
+	"geoprism/backend/ipdb"
 	"geoprism/backend/provider"
 	"geoprism/backend/resolver"
 )
@@ -16,28 +17,81 @@ import (
 type App struct {
 	providerStore *provider.ProviderStore
 	resolver      *resolver.Resolver
+	ipdbStore     *ipdb.Store
+	ipdbRootDir   string
+	ipdbWarning   string
+
+	ipdbWarningShown bool
+	ipdbInitialized  bool
 }
 
 // NewApp 创建并初始化 App
 func NewApp() (*App, error) {
-	configDir := getConfigDir()
+	configDir, err := ensureConfigDirReady()
+	if err != nil {
+		return nil, err
+	}
 
 	store, err := provider.NewProviderStore(configDir)
 	if err != nil {
 		return nil, fmt.Errorf("初始化 Provider 存储失败: %w", err)
 	}
 
-	return &App{
+	ipdbRootDir, err := getIPDBDir()
+	if err != nil {
+		return nil, err
+	}
+
+	app := &App{
 		providerStore: store,
 		resolver:      resolver.NewResolver(),
-	}, nil
+		ipdbRootDir:   ipdbRootDir,
+	}
+
+	return app, nil
 }
 
-// getConfigDir 获取配置目录
-func getConfigDir() string {
-	home, _ := os.UserHomeDir()
-	appSupport := filepath.Join(home, "Library", "Application Support", "GeoPrism")
-	return filepath.Join(appSupport, "config")
+// Close 关闭应用持有的资源。
+func (a *App) Close() error {
+	if a == nil || a.ipdbStore == nil {
+		return nil
+	}
+	return a.ipdbStore.Close()
+}
+
+// ensureIPDBStore 按需初始化离线 IP 库。
+func (a *App) ensureIPDBStore() *ipdb.Store {
+	if a == nil {
+		return nil
+	}
+	if a.ipdbInitialized {
+		return a.ipdbStore
+	}
+
+	a.ipdbInitialized = true
+
+	ipdbStore, err := ipdb.OpenCurrent(a.ipdbRootDir)
+	switch {
+	case err == nil:
+		a.ipdbStore = ipdbStore
+	case errors.Is(err, ipdb.ErrNoCurrentDatabase):
+		a.setIPDBWarning("未找到可用的离线 IP 库，跳过 IP 匹配")
+	default:
+		a.setIPDBWarning(fmt.Sprintf("加载离线 IP 库失败，跳过 IP 匹配: %v", err))
+	}
+
+	return a.ipdbStore
+}
+
+// setIPDBWarning 设置离线 IP 库警告信息。
+func (a *App) setIPDBWarning(message string) {
+	if a == nil || message == "" {
+		return
+	}
+	if a.ipdbWarning != "" {
+		return
+	}
+	a.ipdbWarning = message
 }
 
 // ==================== CLI 子命令 ====================
@@ -81,6 +135,7 @@ func (a *App) runQuery(args []string) {
 		fmt.Fprintf(os.Stderr, "查询失败: %v\n", err)
 		os.Exit(1)
 	}
+	a.printIPDBWarning()
 
 	// 输出结果
 	fmt.Printf("\n查询: %s (%s)\n\n", result.Domain, result.RecordType)
@@ -119,6 +174,7 @@ func (a *App) runQuery(args []string) {
 	w.Flush()
 
 	fmt.Printf("\n总耗时: %dms\n", result.TotalTime)
+	writeIPMatches(os.Stdout, result.IPMatches)
 }
 
 // runProviders 列出所有 Provider
@@ -337,6 +393,7 @@ type QueryResultView struct {
 	Domain     string        `json:"domain"`
 	RecordType string        `json:"record_type"`
 	Answers    []QueryAnswer `json:"answers"`
+	IPMatches  []IPMatchView `json:"ip_matches"`
 	TotalTime  int64         `json:"total_time_ms"`
 }
 
@@ -411,6 +468,7 @@ func (a *App) QueryDomain(req QueryRequest) (QueryResultView, error) {
 			Success:    ans.Success,
 		}
 	}
+	view.IPMatches = a.collectIPMatches(view.Answers)
 
 	return view, nil
 }

@@ -13,6 +13,7 @@ const usage = `GeoPrism - DNS 查询工具
 
 命令:
   query       查询域名 DNS 记录
+  ipdb        构建离线 IP 库
   providers   列出所有 Provider
   test        测试 Provider 连通性
   help        显示帮助信息
@@ -21,12 +22,14 @@ const usage = `GeoPrism - DNS 查询工具
   geoprism example.com
   geoprism query example.com -t AAAA
   geoprism query example.com -p cloudflare,google
+  geoprism ipdb build --csv /absolute/path/ipinfo_lite.csv
   geoprism providers
   geoprism test --all
   geoprism test cloudflare`
 
 // 已知子命令列表
 var knownCommands = map[string]bool{
+	"ipdb":      true,
 	"query":     true,
 	"providers": true,
 	"test":      true,
@@ -47,6 +50,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "初始化失败: %v\n", err)
 		os.Exit(1)
 	}
+	defer func() {
+		if err := app.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "关闭资源失败: %v\n", err)
+		}
+	}()
 
 	cmd := args[0]
 
@@ -59,6 +67,8 @@ func main() {
 	switch cmd {
 	case "query":
 		app.runQuery(args[1:])
+	case "ipdb":
+		app.runIPDB(args[1:])
 	case "providers":
 		app.runProviders()
 	case "test":

@@ -26,3 +26,6 @@ coverage.out
 # Local AI assistant docs
 AGENTS.md
 CLAUDE.md
+
+# Local IP database source files
+ipinfo*.csv
