@@ -23,9 +23,5 @@ coverage.out
 .env
 .env.local
 
-# Local AI assistant docs
-AGENTS.md
-CLAUDE.md
-
 # Local IP database source files
 ipinfo*.csv
