@@ -1,10 +1,10 @@
 # GeoPrism
 
-GeoPrism 是一个 macOS 本地运行的 DNS 查询工具，基于 Wails v2（Go + React + TypeScript）开发。
+GeoPrism 是一个 macOS 本地运行的 DNS 查询 CLI 工具，使用纯 Go 开发。
 
 ## 当前实现状态
 
-- 已完成（M1）：域名查询（A/AAAA/CNAME/TXT/NS/MX）
+- 已完成（M1）：域名查询（A/AAAA/CNAME/TXT/NS/MX/SOA）
 - 已完成（M1）：多 Provider 并行查询
 - 已完成（M1）：DoH / DoT / DNS(UDP) 支持
 - 已完成（M1）：Provider 管理（CRUD + 默认模板）
@@ -15,26 +15,39 @@ GeoPrism 是一个 macOS 本地运行的 DNS 查询工具，基于 Wails v2（Go
 ## 技术栈
 
 - Go 1.23
-- Wails v2.11.0
-- React 18 + TypeScript + Vite
+- 标准库 CLI（`os.Args` + `flag.NewFlagSet`）
+
+## 用法
+
+```bash
+# 快捷查询
+geoprism example.com
+
+# 指定记录类型
+geoprism query example.com -t AAAA
+
+# 指定 Provider
+geoprism query example.com -p cloudflare,google
+
+# 列出所有 Provider
+geoprism providers
+
+# 测试 Provider 连通性
+geoprism test --all
+geoprism test cloudflare
+```
 
 ## 开发命令
 
 ```bash
-# 启动（Wails 开发模式）
-export PATH=$PATH:$(go env GOPATH)/bin
-wails dev
+# 编译
+go build -o geoprism .
 
-# 构建（Wails 打包）
-export PATH=$PATH:$(go env GOPATH)/bin
-wails build
-```
+# 运行（开发）
+go run . example.com
 
-```bash
-# 前端单独构建
-cd frontend
-npm install
-npm run build
+# 清理构建产物
+rm geoprism
 ```
 
 ## 目录说明
@@ -46,6 +59,4 @@ backend/
   ipdb/       # 预留（M2）
   updater/    # 预留（M3）
   storage/    # 预留（M4）
-frontend/src/
-  pages/ components/ hooks/ styles/
 ```
