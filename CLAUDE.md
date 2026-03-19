@@ -16,13 +16,9 @@ GeoPrism 是一个 macOS 本地运行的 DNS / IP 查询 CLI 工具，使用纯 
 
 ```
 GeoPrism/
-├── main.go              # CLI 入口与子命令分发
-├── app.go               # App 核心逻辑与 CLI 子命令实现
-├── paths.go             # ~/.geoprism 路径管理
-├── ipdb_cmd.go          # ipdb build 子命令
-├── ip_match.go          # DNS 结果中的 IP 匹配输出
-├── ip_lookup.go         # 单个 IP 查询入口与结果模型
-├── cli_test.go          # CLI 集成测试
+├── main.go              # CLI 薄入口，仅负责调用 internal/cli
+├── internal/
+│   └── cli/             # CLI 路由、App 实现、路径管理、IP 查询与测试
 ├── render/              # CLI 表格渲染与 TTY 样式增强
 │   ├── output.go        # 输出模式（Text/JSON）与统一 JSON 输出
 │   ├── iplookup.go      # 单个 IP 查询结果渲染

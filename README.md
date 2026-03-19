@@ -75,6 +75,9 @@ rm geoprism
 ## 目录说明
 
 ```text
+main.go      # CLI 薄入口，仅负责调用 internal/cli
+internal/
+  cli/       # CLI 路由、App 实现、路径管理、IP 查询与测试
 render/      # CLI 表格渲染与 TTY 样式增强
 backend/
   provider/   # Provider 配置管理

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -26,6 +26,7 @@ func TestMain(m *testing.M) {
 
 	testBinary = filepath.Join(tmpDir, "geoprism")
 	cmd := exec.Command("go", "build", "-o", testBinary, ".")
+	cmd.Dir = projectRootDir()
 	if err := cmd.Run(); err != nil {
 		panic(err)
 	}
@@ -61,6 +62,26 @@ func runCLIWithHome(home string, args ...string) (stdout, stderr string, exitCod
 		}
 	}
 	return stdoutBuf.String(), stderrBuf.String(), exitCode
+}
+
+func projectRootDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		panic("获取当前工作目录失败: " + err.Error())
+	}
+
+	// 向上查找 go.mod，避免依赖 runtime.Caller 在测试覆盖率模式下的路径行为。
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			panic("未找到项目根目录")
+		}
+		dir = parent
+	}
 }
 
 func buildCLIIPDB(t *testing.T, home string) {
