@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-GeoPrism 是一个 macOS 本地运行的 DNS 查询 CLI 工具，使用纯 Go 开发。
+GeoPrism 是一个 macOS 本地运行的 DNS / IP 查询 CLI 工具，使用纯 Go 开发。
 
 ## 技术栈
 
@@ -21,9 +21,12 @@ GeoPrism/
 ├── paths.go             # ~/.geoprism 路径管理
 ├── ipdb_cmd.go          # ipdb build 子命令
 ├── ip_match.go          # DNS 结果中的 IP 匹配输出
+├── ip_lookup.go         # 单个 IP 查询入口与结果模型
 ├── cli_test.go          # CLI 集成测试
 ├── render/              # CLI 表格渲染与 TTY 样式增强
-│   └── output.go        # 输出模式（Text/JSON）与统一 JSON 输出
+│   ├── output.go        # 输出模式（Text/JSON）与统一 JSON 输出
+│   ├── iplookup.go      # 单个 IP 查询结果渲染
+│   └── match_state.go   # HIT/MISS 状态文案复用
 ├── go.mod               # Go 依赖
 ├── backend/             # Go 后端模块
 │   ├── resolver/        # DoH/DoT/DNS 查询与归一化
@@ -42,6 +45,8 @@ go build -o geoprism .
 
 # 运行（开发）
 go run . example.com
+# 需先构建离线 IP 库
+go run . 1.1.1.1
 
 # 构建离线 IP 库
 go run . ipdb build --csv /absolute/path/ipinfo_lite.csv
@@ -74,7 +79,7 @@ Provider 配置说明：
 ## 当前里程碑状态（代码现状）
 
 - M1 已完成：域名查询、多 Provider 并行、DoH/DoT/DNS、Provider 配置加载/列举/连通性测试与默认模板
-- M2 已完成：离线 IP CSV 导入、Pebble 构建、本地 IP 匹配与查询结果输出
+- M2 已完成：离线 IP CSV 导入、Pebble 构建、DNS 结果本地 IP 匹配与单 IP 查询输出
 - M1 待补：Provider 导入/导出
 - M3 待实现：IP 库下载与更新
 - M4 待实现：历史、导出、日志诊断
@@ -82,11 +87,13 @@ Provider 配置说明：
 ## 当前 CLI 行为
 
 - `geoprism query ...` 在 TTY 下使用增强表格渲染；非 TTY 保持原有纯文本表格协议
+- `geoprism <ip>` 会直接查询本地离线 IP 库；若离线库不存在则报错退出
 - `geoprism providers` 列出当前 TOML 配置中的 Provider
 - `geoprism test --all|<name>` 测试 Provider 连通性
 - `geoprism providers` 与 `geoprism test` 在 TTY 下同样使用增强表格渲染；非 TTY 保持纯文本输出
 - 若本地存在可用离线库，会在 DNS 结果后追加 `IP 匹配详情`；TTY 与非 TTY 都保持表格语义
 - 若本地不存在离线库，仅打印告警并继续 DNS 查询，不中断主流程
+- `geoprism <ip> -j` 输出单个 IP 结果对象，不复用 `query` 的 `domain/answers` 结构
 
 ### JSON 输出
 
@@ -95,5 +102,5 @@ Provider 配置说明：
 - 支持的命令：`query`、`providers`、`test`
 - 不支持的命令：`ipdb`（使用 `-j` 时会输出警告并忽略）
 - 前导和后置参数都支持：`geoprism -j providers` 或 `geoprism providers -j`
-- 快捷查询也支持：`geoprism example.com -j`
+- 快捷查询也支持：`geoprism example.com -j`、`geoprism 1.1.1.1 -j`
 - 错误信息在 JSON 模式下输出到 stderr，格式为 `{"error":"..."}`

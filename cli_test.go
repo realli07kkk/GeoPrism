@@ -35,10 +35,22 @@ func TestMain(m *testing.M) {
 
 // runCLI 执行测试二进制文件并返回 stdout, stderr, exitCode
 func runCLI(args ...string) (stdout, stderr string, exitCode int) {
+	home, err := os.MkdirTemp("", "geoprism-cli-home-*")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(home)
+
+	return runCLIWithHome(home, args...)
+}
+
+// runCLIWithHome 在指定 HOME 下执行测试二进制文件。
+func runCLIWithHome(home string, args ...string) (stdout, stderr string, exitCode int) {
 	cmd := exec.Command(testBinary, args...)
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
+	cmd.Env = append(os.Environ(), "HOME="+home)
 
 	err := cmd.Run()
 	if err != nil {
@@ -49,6 +61,16 @@ func runCLI(args ...string) (stdout, stderr string, exitCode int) {
 		}
 	}
 	return stdoutBuf.String(), stderrBuf.String(), exitCode
+}
+
+func buildCLIIPDB(t *testing.T, home string) {
+	t.Helper()
+
+	rootDir := filepath.Join(home, ".geoprism", "ipdb")
+	if err := os.MkdirAll(rootDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	buildTestIPDB(t, rootDir)
 }
 
 // TestCLIHelp 测试帮助输出
@@ -124,6 +146,117 @@ func TestCLIQueryJSON(t *testing.T) {
 				t.Errorf("domain = %v, want 'example.com'", result["domain"])
 			}
 		})
+	}
+}
+
+func TestCLIIPLookupWithoutIPDB(t *testing.T) {
+	_, stderr, exitCode := runCLI("1.1.1.1")
+	if exitCode == 0 {
+		t.Fatal("should exit with non-zero code when IP DB is missing")
+	}
+	if !strings.Contains(stderr, missingIPDBErrorMessage) {
+		t.Fatalf("stderr should contain missing DB message, got: %s", stderr)
+	}
+}
+
+func TestCLIIPLookupWithoutIPDBJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"前导 -j", []string{"-j", "1.1.1.1"}},
+		{"后置 -j", []string{"1.1.1.1", "-j"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, stderr, exitCode := runCLI(tt.args...)
+			if exitCode == 0 {
+				t.Fatal("should exit with non-zero code when IP DB is missing")
+			}
+
+			var result map[string]string
+			stderr = strings.TrimSpace(stderr)
+			if err := json.Unmarshal([]byte(stderr), &result); err != nil {
+				t.Fatalf("stderr should be valid JSON: %v, got: %s", err, stderr)
+			}
+			if result["error"] != missingIPDBErrorMessage {
+				t.Fatalf("error = %q, want %q", result["error"], missingIPDBErrorMessage)
+			}
+		})
+	}
+}
+
+func TestCLIIPLookupJSON(t *testing.T) {
+	home := t.TempDir()
+	buildCLIIPDB(t, home)
+
+	tests := []struct {
+		name   string
+		args   []string
+		wantIP string
+	}{
+		{"前导 -j", []string{"-j", "1.0.0.1"}, "1.0.0.1"},
+		{"后置 -j", []string{"1.0.0.1", "-j"}, "1.0.0.1"},
+		{"IPv6", []string{"2001:db8::1", "--json"}, "2001:db8::1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runCLIWithHome(home, tt.args...)
+			if exitCode != 0 {
+				t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
+			}
+
+			var result map[string]interface{}
+			if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+				t.Fatalf("output should be valid JSON: %v, got: %s", err, stdout)
+			}
+			if result["ip"] != tt.wantIP {
+				t.Fatalf("ip = %v, want %q", result["ip"], tt.wantIP)
+			}
+			if _, ok := result["matched"]; !ok {
+				t.Fatal("JSON should contain matched field")
+			}
+			if _, ok := result["network"]; !ok {
+				t.Fatal("JSON should contain network field")
+			}
+			if _, ok := result["record"]; ok {
+				t.Fatal("JSON should not contain nested record field")
+			}
+		})
+	}
+}
+
+func TestCLIIPLookupText(t *testing.T) {
+	home := t.TempDir()
+	buildCLIIPDB(t, home)
+
+	stdout, stderr, exitCode := runCLIWithHome(home, "1.0.0.1")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
+	}
+
+	for _, token := range []string{"IP 查询结果", "1.0.0.1", "HIT", "1.0.0.0/24"} {
+		if !strings.Contains(stdout, token) {
+			t.Fatalf("stdout missing token %q:\n%s", token, stdout)
+		}
+	}
+}
+
+func TestCLIIPLookupFlagErrorJSON(t *testing.T) {
+	_, stderr, exitCode := runCLI("1.0.0.1", "-j", "-bogus")
+	if exitCode == 0 {
+		t.Fatal("should exit with non-zero code for unknown flag")
+	}
+
+	var result map[string]string
+	stderr = strings.TrimSpace(stderr)
+	if err := json.Unmarshal([]byte(stderr), &result); err != nil {
+		t.Fatalf("stderr should be valid JSON: %v, got: %s", err, stderr)
+	}
+	if _, ok := result["error"]; !ok {
+		t.Fatal("JSON should contain error field")
 	}
 }
 

@@ -2,19 +2,20 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 
 	"geoprism/render"
 )
 
-const usage = `GeoPrism - DNS 查询工具
+const usage = `GeoPrism - DNS / IP 查询工具
 
 用法:
   geoprism <command> [flags]
-  geoprism <domain>              快捷查询，等价于 geoprism query <domain>
+  geoprism <domain|ip>           快捷查询域名或直接匹配单个 IP
 
 输出格式:
-  -j, --json                     JSON 格式输出（支持 query/providers/test，不支持 ipdb）
+  -j, --json                     JSON 格式输出（支持 query/providers/test 和快捷 domain/ip 查询，不支持 ipdb）
 
 命令:
   query       查询域名 DNS 记录
@@ -26,6 +27,8 @@ const usage = `GeoPrism - DNS 查询工具
 示例:
   geoprism example.com
   geoprism example.com -j
+  geoprism 1.1.1.1
+  geoprism 1.1.1.1 -j
   geoprism query example.com -t AAAA
   geoprism query example.com -p cloudflare,google
   geoprism ipdb build --csv /absolute/path/ipinfo_lite.csv
@@ -52,6 +55,11 @@ var jsonSupportedCommands = map[string]bool{
 // isGlobalFlag 判断是否是全局 flag
 func isGlobalFlag(arg string) bool {
 	return arg == "-j" || arg == "--json"
+}
+
+// isIPLiteral 判断输入是否是合法 IP 字面量。
+func isIPLiteral(arg string) bool {
+	return net.ParseIP(arg) != nil
 }
 
 func main() {
@@ -107,9 +115,13 @@ func main() {
 
 	cmd := remaining[0]
 
-	// 如果不是已知命令，当作域名进行快捷查询
+	// 如果不是已知命令，按输入内容决定走域名查询还是 IP 查询
 	if !knownCommands[cmd] {
-		app.runQuery(remaining)
+		if isIPLiteral(cmd) {
+			app.runIPLookup(remaining)
+		} else {
+			app.runQuery(remaining)
+		}
 		return
 	}
 

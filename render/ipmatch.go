@@ -54,16 +54,11 @@ func writeIPMatchesPlain(w io.Writer, matches IPMatchCollection) {
 
 	for i := 0; i < matches.MatchCount(); i++ {
 		m := matches.MatchAt(i)
-		matchStatus := "MISS"
-		if m.MatchedState() {
-			matchStatus = "HIT"
-		}
-
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			m.ProviderName(),
 			m.RecordTypeText(),
 			m.IPText(),
-			matchStatus,
+			matchStateText(m.MatchedState()),
 			m.NetworkText(),
 			m.CountryText(),
 			m.CountryCodeText(),
@@ -84,16 +79,11 @@ func writeIPMatchesPretty(w io.Writer, matches IPMatchCollection) {
 	var rows [][]string
 	for i := 0; i < matches.MatchCount(); i++ {
 		m := matches.MatchAt(i)
-		matchStatus := "MISS"
-		if m.MatchedState() {
-			matchStatus = "HIT"
-		}
-
 		rows = append(rows, []string{
 			m.ProviderName(),
 			m.RecordTypeText(),
 			m.IPText(),
-			matchStatus,
+			matchStateText(m.MatchedState()),
 			m.NetworkText(),
 			m.CountryText(),
 			m.CountryCodeText(),

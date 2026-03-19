@@ -23,6 +23,7 @@ type App struct {
 
 	ipdbWarningShown bool
 	ipdbInitialized  bool
+	ipdbInitErr      error
 	outputMode       render.OutputMode
 }
 
@@ -88,14 +89,12 @@ func (a *App) ensureIPDBStore() *ipdb.Store {
 	a.ipdbInitialized = true
 
 	ipdbStore, err := ipdb.OpenCurrent(a.ipdbRootDir)
-	switch {
-	case err == nil:
+	if err == nil {
 		a.ipdbStore = ipdbStore
-	case errors.Is(err, ipdb.ErrNoCurrentDatabase):
-		a.setIPDBWarning("未找到可用的离线 IP 库，跳过 IP 匹配")
-	default:
-		a.setIPDBWarning(fmt.Sprintf("加载离线 IP 库失败，跳过 IP 匹配: %v", err))
+		a.recordIPDBInitError(nil)
+		return a.ipdbStore
 	}
+	a.recordIPDBInitError(err)
 
 	return a.ipdbStore
 }
@@ -109,6 +108,25 @@ func (a *App) setIPDBWarning(message string) {
 		return
 	}
 	a.ipdbWarning = message
+}
+
+// recordIPDBInitError 统一记录离线库初始化结果，避免错误状态和告警文案分裂。
+func (a *App) recordIPDBInitError(err error) {
+	if a == nil {
+		return
+	}
+
+	a.ipdbInitErr = err
+	if err == nil {
+		return
+	}
+
+	if errors.Is(err, ipdb.ErrNoCurrentDatabase) {
+		a.setIPDBWarning("未找到可用的离线 IP 库，跳过 IP 匹配")
+		return
+	}
+
+	a.setIPDBWarning(fmt.Sprintf("加载离线 IP 库失败，跳过 IP 匹配: %v", err))
 }
 
 // ==================== CLI 子命令 ====================
