@@ -8,7 +8,7 @@ GeoPrism 是一个 macOS 本地运行的 DNS / IP 查询 CLI 工具，使用纯 
 - 已完成（M1）：多 Provider 并行查询
 - 已完成（M1）：DoH / DoT / DNS(UDP) 支持
 - 已完成（M1）：Provider 配置加载、列举、连通性测试与默认模板
-- 已完成（M1）：可选 NS 服务器信息查询（`--ns`）
+- 已完成（M1）：NS 服务器信息查询
 - 已完成（M2）：离线 IP 库导入、解析匹配与单 IP 查询
 - 待实现：Provider 导入/导出
 - 待实现：IP 库下载更新（M3）
@@ -34,10 +34,6 @@ geoprism query example.com -t AAAA
 
 # 指定 Provider
 geoprism query example.com -p cloudflare,google
-
-# 追加 NS 服务器信息
-geoprism query example.com --ns
-geoprism example.com --ns -j
 
 # JSON 格式输出（供 AI agent 或脚本使用）
 geoprism -j providers
@@ -98,7 +94,7 @@ backend/
 - `query`、`providers`、`test` 以及单个 IP 查询在 TTY 下使用增强表格渲染
 - 非 TTY 输出保持纯文本表格协议，便于重定向和脚本处理
 - `IP 匹配详情` 在 TTY 与非 TTY 下都保持表格语义，只在样式上有差异
-- `query` 在带 `--ns` 时会追加 `NS 服务器信息`；JSON 模式下会额外包含 `ns_info`
+- `query` 会追加 `NS 服务器信息`；JSON 模式下包含 `ns_info`
 - `geoprism <ip>` 依赖本地离线 IP 库；若离线库不存在，会直接报错并提示先执行 `geoprism ipdb build --csv /absolute/path/ipinfo_lite.csv`
 - `geoprism <ip> -j` 输出单个 IP 结果对象，不复用 `query` 的 `domain/answers` 结构
 
@@ -109,7 +105,7 @@ backend/
 - 支持：`query`、`providers`、`test`（前导或后置参数均可）
 - 快捷查询同样支持：`geoprism example.com -j`、`geoprism 1.1.1.1 -j`
 - 不支持：`ipdb`（会输出警告并忽略）
-- `query` 在带 `--ns` 时会额外包含 `ns_info` 字段，包含可用性、查询耗时、NS 服务器列表或错误信息
+- `query` 会包含 `ns_info` 字段，包含可用性、查询耗时、NS 服务器列表或错误信息
 - 错误信息输出到 stderr，格式为 `{"error":"..."}`
 
 ## 数据目录

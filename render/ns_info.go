@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"io"
+	"reflect"
 	"text/tabwriter"
 
 	"github.com/charmbracelet/lipgloss"
@@ -39,7 +40,7 @@ type NSInfoSource interface {
 
 // WriteNSInfo 渲染 NS 服务器信息。
 func WriteNSInfo(w io.Writer, data NSInfoSource) {
-	if data == nil {
+	if isNilNSInfoSource(data) {
 		return
 	}
 
@@ -47,6 +48,23 @@ func WriteNSInfo(w io.Writer, data NSInfoSource) {
 		writeNSInfoPretty(w, data)
 	} else {
 		writeNSInfoPlain(w, data)
+	}
+}
+
+// isNilNSInfoSource 判断 NS 渲染输入是否为空。
+// 这里只做 data == nil 不够，因为 interface 里可能封装了 typed nil；
+// 这类值在比较时不等于 nil，但继续调方法会直接 panic。
+func isNilNSInfoSource(data NSInfoSource) bool {
+	if data == nil {
+		return true
+	}
+
+	value := reflect.ValueOf(data)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
 	}
 }
 

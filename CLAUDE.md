@@ -75,7 +75,7 @@ Provider 配置说明：
 
 ## 当前里程碑状态（代码现状）
 
-- M1 已完成：域名查询、多 Provider 并行、DoH/DoT/DNS、Provider 配置加载/列举/连通性测试、可选 NS 服务器信息查询与默认模板
+- M1 已完成：域名查询、多 Provider 并行、DoH/DoT/DNS、Provider 配置加载/列举/连通性测试、NS 服务器信息查询与默认模板
 - M2 已完成：离线 IP CSV 导入、Pebble 构建、DNS 结果本地 IP 匹配与单 IP 查询输出
 - M1 待补：Provider 导入/导出
 - M3 待实现：IP 库下载与更新
@@ -90,7 +90,7 @@ Provider 配置说明：
 - `geoprism providers` 与 `geoprism test` 在 TTY 下同样使用增强表格渲染；非 TTY 保持纯文本输出
 - 若本地存在可用离线库，会在 DNS 结果后追加 `IP 匹配详情`；TTY 与非 TTY 都保持表格语义
 - 若本地不存在离线库，仅打印告警并继续 DNS 查询，不中断主流程
-- `geoprism query ... --ns` 或 `geoprism <domain> --ns` 会在主查询后追加 `NS 服务器信息`
+- `geoprism query ...` 或 `geoprism <domain>` 会在主查询后追加 `NS 服务器信息`
 - `geoprism <ip> -j` 输出单个 IP 结果对象，不复用 `query` 的 `domain/answers` 结构
 
 ### JSON 输出
@@ -101,5 +101,5 @@ Provider 配置说明：
 - 不支持的命令：`ipdb`（使用 `-j` 时会输出警告并忽略）
 - 前导和后置参数都支持：`geoprism -j providers` 或 `geoprism providers -j`
 - 快捷查询也支持：`geoprism example.com -j`、`geoprism 1.1.1.1 -j`
-- `query` 在带 `--ns` 时会额外输出 `ns_info` 字段，包含可用性、查询耗时、NS 服务器列表或错误信息
+- `query` 会输出 `ns_info` 字段，包含可用性、查询耗时、NS 服务器列表或错误信息
 - 错误信息在 JSON 模式下输出到 stderr，格式为 `{"error":"..."}`

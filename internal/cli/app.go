@@ -139,7 +139,6 @@ func (a *App) runQuery(args []string) {
 	providerFlag := fs.String("p", "", "Provider 名称，逗号分隔")
 	fs.StringVar(providerFlag, "provider", "", "Provider 名称，逗号分隔")
 	timeout := fs.Int("timeout", 5000, "超时毫秒")
-	withNS := fs.Bool("ns", false, "显示 NS 服务器信息")
 	jsonFlag := fs.Bool("j", false, "JSON 格式输出")
 	fs.BoolVar(jsonFlag, "json", false, "JSON 格式输出")
 	fs.Parse(reorderArgs(args))
@@ -171,7 +170,6 @@ func (a *App) runQuery(args []string) {
 		RecordType:  strings.ToUpper(*recordType),
 		ProviderIDs: providerIDs,
 		Timeout:     *timeout,
-		WithNS:      *withNS,
 	})
 	if err != nil {
 		a.writeError(err.Error())
@@ -487,7 +485,6 @@ type QueryRequest struct {
 	RecordType  string   `json:"record_type"`
 	ProviderIDs []string `json:"provider_ids"`
 	Timeout     int      `json:"timeout"`
-	WithNS      bool     `json:"with_ns"` // 是否查询 NS 服务器信息
 }
 
 // QueryAnswer 查询响应
@@ -661,11 +658,9 @@ func (a *App) QueryDomain(req QueryRequest) (QueryResultView, error) {
 	}
 	view.IPMatches = a.collectIPMatches(view.Answers)
 
-	// 按需查询 NS 服务器信息
-	if req.WithNS {
-		nsInfo := a.queryNSInfo(req.Domain, providers, timeout)
-		view.NSInfo = &nsInfo
-	}
+	// 始终查询 NS 信息
+	nsInfo := a.queryNSInfo(req.Domain, providers, timeout)
+	view.NSInfo = &nsInfo
 
 	return view, nil
 }

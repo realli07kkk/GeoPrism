@@ -9,15 +9,15 @@ import (
 	"geoprism/backend/resolver"
 )
 
-// TestCLIQueryWithNSJSON 测试 query --ns -j 输出 JSON
-func TestCLIQueryWithNSJSON(t *testing.T) {
+// TestCLIQueryJSONIncludesNSInfo 测试默认 query -j 输出包含 ns_info
+func TestCLIQueryJSONIncludesNSInfo(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{"前导 -j", []string{"-j", "query", "cloudflare.com", "--ns"}},
-		{"后置 -j", []string{"query", "cloudflare.com", "--ns", "-j"}},
-		{"快捷查询", []string{"cloudflare.com", "--ns", "-j"}},
+		{"前导 -j", []string{"-j", "query", "cloudflare.com"}},
+		{"后置 -j", []string{"query", "cloudflare.com", "-j"}},
+		{"快捷查询", []string{"cloudflare.com", "-j"}},
 	}
 
 	for _, tt := range tests {
@@ -78,9 +78,9 @@ func TestCLIQueryWithNSJSON(t *testing.T) {
 	}
 }
 
-// TestCLIQueryWithNSText 测试 query --ns 文本输出
-func TestCLIQueryWithNSText(t *testing.T) {
-	stdout, _, exitCode := runCLI("query", "cloudflare.com", "--ns")
+// TestCLIQueryTextIncludesNSInfo 测试默认 query 文本输出包含 NS 信息
+func TestCLIQueryTextIncludesNSInfo(t *testing.T) {
+	stdout, _, exitCode := runCLI("query", "cloudflare.com")
 	if exitCode != 0 {
 		t.Errorf("exit code = %d, want 0", exitCode)
 	}
@@ -96,10 +96,10 @@ func TestCLIQueryWithNSText(t *testing.T) {
 	}
 }
 
-// TestCLIQueryWithNSNXDOMAIN 测试 --ns 对 NXDOMAIN 的确定性错误聚合
-func TestCLIQueryWithNSNXDOMAIN(t *testing.T) {
+// TestCLIQueryNXDOMAINNSInfo 测试默认 NS 对 NXDOMAIN 的确定性错误聚合
+func TestCLIQueryNXDOMAINNSInfo(t *testing.T) {
 	// 使用一个不存在的域名
-	stdout, _, _ := runCLI("-j", "query", "nonexistent-test-domain-xyz123.invalid", "--ns")
+	stdout, _, _ := runCLI("-j", "query", "nonexistent-test-domain-xyz123.invalid")
 
 	// 可能返回非零退出码，也可能返回零（取决于 provider 行为）
 	// 重要的是验证错误信息的确定性
@@ -126,11 +126,11 @@ func TestCLIQueryWithNSNXDOMAIN(t *testing.T) {
 	}
 }
 
-// TestCLIQueryWithNSDeterministicOrder 测试 --ns 输出顺序稳定性
-func TestCLIQueryWithNSDeterministicOrder(t *testing.T) {
+// TestCLIQueryNSDeterministicOrder 测试默认 NS 输出顺序稳定性
+func TestCLIQueryNSDeterministicOrder(t *testing.T) {
 	// 运行两次，验证 NS 服务器顺序稳定
 	runAndCheckOrder := func() []string {
-		stdout, _, exitCode := runCLI("-j", "query", "cloudflare.com", "--ns")
+		stdout, _, exitCode := runCLI("-j", "query", "cloudflare.com")
 		if exitCode != 0 {
 			t.Fatalf("exit code = %d", exitCode)
 		}
