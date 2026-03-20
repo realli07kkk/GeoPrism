@@ -24,6 +24,12 @@ const usage = `GeoPrism - DNS / IP 查询工具
   test        测试 Provider 连通性
   help        显示帮助信息
 
+query 参数:
+  -t, --type <type>              记录类型 (A/AAAA/CNAME/TXT/NS/MX/SOA)
+  -p, --provider <names>         Provider 名称，逗号分隔
+  --ns                           显示 NS 服务器信息
+  --timeout <ms>                 超时毫秒（默认 5000）
+
 示例:
   geoprism example.com
   geoprism example.com -j
@@ -31,6 +37,7 @@ const usage = `GeoPrism - DNS / IP 查询工具
   geoprism 1.1.1.1 -j
   geoprism query example.com -t AAAA
   geoprism query example.com -p cloudflare,google
+  geoprism query example.com --ns
   geoprism ipdb build --csv /absolute/path/ipinfo_lite.csv
   geoprism providers
   geoprism test --all
