@@ -2,6 +2,7 @@ package cli
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,6 +121,7 @@ func (i NSIPInfo) ASNameText() string {
 }
 
 // queryNSInfo 查询域名的 NS 服务器信息
+// 注意：NS 记录只存在于 zone apex，因此会提取主域名进行查询
 func (a *App) queryNSInfo(domain string, providers []resolver.ProviderInfo, timeout int) NSInfoView {
 	start := time.Now()
 
@@ -128,9 +130,12 @@ func (a *App) queryNSInfo(domain string, providers []resolver.ProviderInfo, time
 	// 在串行路径上一次性初始化离线库，避免并发 data race
 	ipdbStore := a.ensureIPDBStore()
 
+	// 提取主域名（zone apex），NS 记录只存在于 apex
+	apexDomain := extractApexDomain(domain)
+
 	// 1. 查询 NS 记录
 	nsAnswer := a.resolver.QueryMulti(providers, resolver.DNSQuery{
-		Domain:     domain,
+		Domain:     apexDomain,
 		RecordType: resolver.RecordTypeNS,
 		Timeout:    timeout,
 	})
@@ -197,6 +202,18 @@ func selectNSQueryError(answers []resolver.DNSAnswer) string {
 	}
 
 	return "未找到 NS 记录"
+}
+
+// extractApexDomain 从域名中提取主域名（zone apex）
+// 例如：www.baidu.com → baidu.com, a.b.example.com → example.com
+// 对于只有 1-2 个 label 的域名，直接返回原域名
+func extractApexDomain(domain string) string {
+	parts := strings.Split(domain, ".")
+	if len(parts) <= 2 {
+		return domain
+	}
+	// 去掉第一个 label，返回剩余部分
+	return strings.Join(parts[1:], ".")
 }
 
 // extractNSNames 从 NS 查询结果中提取 NS 名称（去重并按名称排序）
