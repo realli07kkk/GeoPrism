@@ -34,6 +34,7 @@ const (
 	RecordTypeNS    RecordType = "NS"
 	RecordTypeMX    RecordType = "MX"
 	RecordTypeSOA   RecordType = "SOA"
+	RecordTypePTR   RecordType = "PTR"
 )
 
 // DNSQuery DNS 查询请求
@@ -108,6 +109,8 @@ func getRecordTypeCode(rt RecordType) uint16 {
 		return dns.TypeMX
 	case RecordTypeSOA:
 		return dns.TypeSOA
+	case RecordTypePTR:
+		return dns.TypePTR
 	default:
 		return dns.TypeA
 	}

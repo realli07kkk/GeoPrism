@@ -134,13 +134,15 @@ func (a *App) recordIPDBInitError(err error) {
 // runQuery 执行域名查询
 func (a *App) runQuery(args []string) {
 	fs := flag.NewFlagSet("query", flag.ExitOnError)
-	recordType := fs.String("t", "A", "记录类型 (A/AAAA/CNAME/TXT/NS/MX/SOA)")
-	fs.StringVar(recordType, "type", "A", "记录类型 (A/AAAA/CNAME/TXT/NS/MX/SOA)")
+	recordType := fs.String("t", "A", "记录类型 (A/AAAA/CNAME/TXT/NS/MX/SOA/PTR)")
+	fs.StringVar(recordType, "type", "A", "记录类型 (A/AAAA/CNAME/TXT/NS/MX/SOA/PTR)")
 	providerFlag := fs.String("p", "", "Provider 名称，逗号分隔")
 	fs.StringVar(providerFlag, "provider", "", "Provider 名称，逗号分隔")
 	timeout := fs.Int("timeout", 5000, "超时毫秒")
 	jsonFlag := fs.Bool("j", false, "JSON 格式输出")
 	fs.BoolVar(jsonFlag, "json", false, "JSON 格式输出")
+	ptrFlag := fs.Bool("x", false, "反向 PTR 查询（IP → 域名）")
+	fs.BoolVar(ptrFlag, "ptr", false, "反向 PTR 查询（IP → 域名）")
 	fs.Parse(reorderArgs(args))
 
 	if *jsonFlag {
@@ -153,6 +155,17 @@ func (a *App) runQuery(args []string) {
 	}
 
 	domain := fs.Arg(0)
+
+	// 处理反向查询
+	if *ptrFlag {
+		ip := parseIPAndValidate(domain)
+		if ip == nil {
+			a.writeError("-x 参数需要有效的 IP 地址")
+			os.Exit(1)
+		}
+		domain = ipToReverseName(ip)
+		*recordType = "PTR"
+	}
 
 	// 按名称匹配 Provider
 	var providerIDs []string

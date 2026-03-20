@@ -25,7 +25,8 @@ const usage = `GeoPrism - DNS / IP 查询工具
   help        显示帮助信息
 
 query 参数:
-  -t, --type <type>              记录类型 (A/AAAA/CNAME/TXT/NS/MX/SOA)
+  -t, --type <type>              记录类型 (A/AAAA/CNAME/TXT/NS/MX/SOA/PTR)
+  -x, --ptr                     反向 PTR 查询（IP → 域名）
   -p, --provider <names>         Provider 名称，逗号分隔
   --timeout <ms>                 超时毫秒（默认 5000）
 
@@ -35,6 +36,8 @@ query 参数:
   geoprism 1.1.1.1
   geoprism 1.1.1.1 -j
   geoprism query example.com -t AAAA
+  geoprism query 8.8.8.8 -x      # 反向查询：8.8.8.8 → dns.google
+  geoprism -x 8.8.8.8            # 快捷反向查询
   geoprism query example.com -p cloudflare,google
   geoprism ipdb build --csv /absolute/path/ipinfo_lite.csv
   geoprism providers
@@ -60,6 +63,11 @@ var jsonSupportedCommands = map[string]bool{
 // isGlobalFlag 判断是否是全局 flag
 func isGlobalFlag(arg string) bool {
 	return arg == "-j" || arg == "--json"
+}
+
+// isReverseFlag 判断是否是反向查询 flag
+func isReverseFlag(arg string) bool {
+	return arg == "-x" || arg == "--ptr"
 }
 
 // isIPLiteral 判断输入是否是合法 IP 字面量。
@@ -94,19 +102,27 @@ func Main(args []string) {
 		i++
 	}
 
+	// 检查是否有反向查询 flag（任意位置）
+	hasReverseFlag := false
+	var cleanArgs []string
+	for _, arg := range args[i:] {
+		if isReverseFlag(arg) {
+			hasReverseFlag = true
+		} else {
+			cleanArgs = append(cleanArgs, arg)
+		}
+	}
+
 	// 检查前导 -j 是否被不支持 JSON 的命令使用
-	if outputJSON && i < len(args) {
-		cmd := args[i]
+	if outputJSON && len(cleanArgs) > 0 {
+		cmd := cleanArgs[0]
 		if knownCommands[cmd] && !jsonSupportedCommands[cmd] {
 			fmt.Fprintf(os.Stderr, "警告: %s 命令不支持 JSON 输出，-j 将被忽略\n", cmd)
 			outputJSON = false
 		}
 	}
 
-	// 剩余参数
-	remaining := args[i:]
-
-	if len(remaining) == 0 {
+	if len(cleanArgs) == 0 {
 		// 只有全局 flag，没有命令或域名
 		fmt.Println(usage)
 		os.Exit(0)
@@ -117,14 +133,19 @@ func Main(args []string) {
 		app.SetOutputMode(render.OutputJSON)
 	}
 
-	cmd := remaining[0]
+	cmd := cleanArgs[0]
 
 	// 如果不是已知命令，按输入内容决定走域名查询还是 IP 查询
 	if !knownCommands[cmd] {
+		// 快捷反向查询：geoprism -x 8.8.8.8
+		if hasReverseFlag {
+			app.runQuery(append([]string{"-x"}, cleanArgs...))
+			return
+		}
 		if isIPLiteral(cmd) {
-			app.runIPLookup(remaining)
+			app.runIPLookup(cleanArgs)
 		} else {
-			app.runQuery(remaining)
+			app.runQuery(cleanArgs)
 		}
 		return
 	}
@@ -132,13 +153,17 @@ func Main(args []string) {
 	// 已知命令：传递剩余参数到子命令
 	switch cmd {
 	case "query":
-		app.runQuery(remaining[1:])
+		queryArgs := cleanArgs[1:]
+		if hasReverseFlag {
+			queryArgs = append([]string{"-x"}, queryArgs...)
+		}
+		app.runQuery(queryArgs)
 	case "ipdb":
-		app.runIPDB(remaining[1:])
+		app.runIPDB(cleanArgs[1:])
 	case "providers":
-		app.runProviders(remaining[1:])
+		app.runProviders(cleanArgs[1:])
 	case "test":
-		app.runTest(remaining[1:])
+		app.runTest(cleanArgs[1:])
 	case "help":
 		fmt.Println(usage)
 	}

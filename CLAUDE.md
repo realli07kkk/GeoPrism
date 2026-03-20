@@ -92,6 +92,7 @@ Provider 配置说明：
 - 若本地不存在离线库，仅打印告警并继续 DNS 查询，不中断主流程
 - `geoprism query ...` 或 `geoprism <domain>` 会在主查询后追加 `NS 服务器信息`
 - `geoprism <ip> -j` 输出单个 IP 结果对象，不复用 `query` 的 `domain/answers` 结构
+- `geoprism -x <ip>` 或 `geoprism query <ip> -x` 执行反向 PTR 查询（IP → 域名），支持 IPv4 和 IPv6
 
 ### JSON 输出
 

@@ -4,7 +4,7 @@ GeoPrism 是一个 macOS 本地运行的 DNS / IP 查询 CLI 工具，使用纯 
 
 ## 当前实现状态
 
-- 已完成（M1）：域名查询（A/AAAA/CNAME/TXT/NS/MX/SOA）
+- 已完成（M1）：域名查询（A/AAAA/CNAME/TXT/NS/MX/SOA/PTR）
 - 已完成（M1）：多 Provider 并行查询
 - 已完成（M1）：DoH / DoT / DNS(UDP) 支持
 - 已完成（M1）：Provider 配置加载、列举、连通性测试与默认模板
@@ -31,6 +31,10 @@ geoprism 1.1.1.1
 
 # 指定记录类型
 geoprism query example.com -t AAAA
+
+# 反向查询（IP → 域名）
+geoprism -x 8.8.8.8
+geoprism query 8.8.8.8 -x
 
 # 指定 Provider
 geoprism query example.com -p cloudflare,google
