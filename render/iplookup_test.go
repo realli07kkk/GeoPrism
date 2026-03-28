@@ -17,6 +17,7 @@ type ipLookupStub struct {
 	asn           string
 	asName        string
 	asDomain      string
+	source        string
 }
 
 func (s ipLookupStub) IPText() string {
@@ -57,6 +58,10 @@ func (s ipLookupStub) ASNameText() string {
 
 func (s ipLookupStub) ASDomainText() string {
 	return s.asDomain
+}
+
+func (s ipLookupStub) SourceText() string {
+	return s.source
 }
 
 func TestWriteIPLookup(t *testing.T) {

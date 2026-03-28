@@ -8,8 +8,10 @@ import (
 	"strings"
 
 	"geoprism/backend/ipdb"
+	"geoprism/backend/ipinfo"
 	"geoprism/backend/provider"
 	"geoprism/backend/resolver"
+	"geoprism/backend/settings"
 	"geoprism/render"
 )
 
@@ -25,6 +27,9 @@ type App struct {
 	ipdbInitialized  bool
 	ipdbInitErr      error
 	outputMode       render.OutputMode
+
+	settings     *settings.SettingsStore
+	ipinfoClient *ipinfo.Client // token 为空时为 nil
 }
 
 // NewApp 创建并初始化 App
@@ -39,6 +44,18 @@ func NewApp() (*App, error) {
 		return nil, fmt.Errorf("初始化 Provider 存储失败: %w", err)
 	}
 
+	// 加载 settings.toml（可选，失败不退出）
+	settingsStore, settingsErr := settings.NewSettingsStore(configDir)
+	if settingsErr != nil {
+		fmt.Fprintf(os.Stderr, "警告: 加载应用配置失败: %v\n", settingsErr)
+	}
+
+	// 有 ipinfo token 时创建客户端
+	var ipinfoClient *ipinfo.Client
+	if settingsStore != nil && settingsStore.IsIPInfoEnabled() {
+		ipinfoClient = ipinfo.NewClient(settingsStore.IPInfoToken())
+	}
+
 	ipdbRootDir, err := getIPDBDir()
 	if err != nil {
 		return nil, err
@@ -48,6 +65,8 @@ func NewApp() (*App, error) {
 		providerStore: store,
 		resolver:      resolver.NewResolver(),
 		ipdbRootDir:   ipdbRootDir,
+		settings:      settingsStore,
+		ipinfoClient:  ipinfoClient,
 	}
 
 	return app, nil

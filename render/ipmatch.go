@@ -23,6 +23,7 @@ type IPMatchSource interface {
 	ASNText() string
 	ASNameText() string
 	ASDomainText() string
+	SourceText() string
 }
 
 // IPMatchCollection 描述可渲染的 IP 匹配集合。
@@ -44,17 +45,17 @@ func WriteIPMatches(w io.Writer, matches IPMatchCollection) {
 	}
 }
 
-// writeIPMatchesPlain 纯文本 12 列表格输出（保持旧协议）
+// writeIPMatchesPlain 纯文本表格输出
 func writeIPMatchesPlain(w io.Writer, matches IPMatchCollection) {
 	fmt.Fprint(w, "\nIP 匹配详情\n\n")
 
 	tw := tabwriter.NewWriter(w, 0, 0, 4, ' ', 0)
-	fmt.Fprintln(tw, "Provider\tType\tIP\tMatch\tNetwork\tCountry\tCountryCode\tContinent\tContinentCode\tASN\tASName\tASDomain")
-	fmt.Fprintln(tw, "--------\t----\t--\t-----\t-------\t-------\t-----------\t---------\t-------------\t---\t------\t--------")
+	fmt.Fprintln(tw, "Provider\tType\tIP\tMatch\tNetwork\tCountry\tCountryCode\tContinent\tContinentCode\tASN\tASName\tASDomain\tSource")
+	fmt.Fprintln(tw, "--------\t----\t--\t-----\t-------\t-------\t-----------\t---------\t-------------\t---\t------\t--------\t------")
 
 	for i := 0; i < matches.MatchCount(); i++ {
 		m := matches.MatchAt(i)
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			m.ProviderName(),
 			m.RecordTypeText(),
 			m.IPText(),
@@ -67,6 +68,7 @@ func writeIPMatchesPlain(w io.Writer, matches IPMatchCollection) {
 			m.ASNText(),
 			m.ASNameText(),
 			m.ASDomainText(),
+			m.SourceText(),
 		)
 	}
 	tw.Flush()
@@ -92,11 +94,12 @@ func writeIPMatchesPretty(w io.Writer, matches IPMatchCollection) {
 			m.ASNText(),
 			m.ASNameText(),
 			m.ASDomainText(),
+			m.SourceText(),
 		})
 	}
 
 	t := table.New().
-		Headers("Provider", "Type", "IP", "Match", "Network", "Country", "CountryCode", "Continent", "ContinentCode", "ASN", "ASName", "ASDomain").
+		Headers("Provider", "Type", "IP", "Match", "Network", "Country", "CountryCode", "Continent", "ContinentCode", "ASN", "ASName", "ASDomain", "Source").
 		Border(lipgloss.RoundedBorder()).
 		BorderStyle(lipgloss.NewStyle().Foreground(ColorMuted)).
 		StyleFunc(func(row, col int) lipgloss.Style {
@@ -119,6 +122,12 @@ func writeIPMatchesPretty(w io.Writer, matches IPMatchCollection) {
 				}
 				return s.Foreground(ColorError)
 			case 2, 9, 10, 11:
+				return s.Foreground(ColorMuted)
+			case 12:
+				src := rows[row][12]
+				if src == "ipinfo" {
+					return s.Foreground(ColorAccent)
+				}
 				return s.Foreground(ColorMuted)
 			}
 			return s

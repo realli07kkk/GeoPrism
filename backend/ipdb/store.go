@@ -49,8 +49,7 @@ func OpenCurrent(rootDir string) (*Store, error) {
 	}
 
 	db, err := pebble.Open(dbDirPath, &pebble.Options{
-		ReadOnly: true,
-		Logger:   silentLogger{},
+		Logger: silentLogger{},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("打开 Pebble 数据库失败: %w", err)
@@ -80,6 +79,35 @@ func OpenCurrent(rootDir string) (*Store, error) {
 		metadata:  metadata,
 		dbDirPath: dbDirPath,
 	}, nil
+}
+
+// WriteRecord 向数据库写入单条 /32 或 /128 记录。
+func (s *Store) WriteRecord(record Record) error {
+	if s == nil {
+		return ErrNoCurrentDatabase
+	}
+
+	prefix, err := netip.ParsePrefix(record.Network)
+	if err != nil {
+		return fmt.Errorf("解析网段失败: %w", err)
+	}
+
+	key, err := encodePrefixKey(prefix)
+	if err != nil {
+		return fmt.Errorf("编码 key 失败: %w", err)
+	}
+
+	value, err := encodeRecordValue(prefix.Bits(), record)
+	if err != nil {
+		return fmt.Errorf("编码 value 失败: %w", err)
+	}
+
+	// 复用已有的读写句柄写入
+	if err := s.db.Set(key, value, nil); err != nil {
+		return fmt.Errorf("写入记录失败: %w", err)
+	}
+
+	return nil
 }
 
 // Close 关闭离线库。

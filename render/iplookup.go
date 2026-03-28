@@ -21,6 +21,7 @@ type IPLookupSource interface {
 	ASNText() string
 	ASNameText() string
 	ASDomainText() string
+	SourceText() string
 }
 
 // WriteIPLookup 渲染单个 IP 查询结果。
@@ -41,9 +42,9 @@ func writeIPLookupPlain(w io.Writer, result IPLookupSource) {
 	fmt.Fprint(w, "\nIP 查询结果\n\n")
 
 	tw := tabwriter.NewWriter(w, 0, 0, 4, ' ', 0)
-	fmt.Fprintln(tw, "IP\tMatch\tNetwork\tCountry\tCountryCode\tContinent\tContinentCode\tASN\tASName\tASDomain")
-	fmt.Fprintln(tw, "--\t-----\t-------\t-------\t-----------\t---------\t-------------\t---\t------\t--------")
-	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+	fmt.Fprintln(tw, "IP\tMatch\tNetwork\tCountry\tCountryCode\tContinent\tContinentCode\tASN\tASName\tASDomain\tSource")
+	fmt.Fprintln(tw, "--\t-----\t-------\t-------\t-----------\t---------\t-------------\t---\t------\t--------\t------")
+	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 		result.IPText(),
 		matchStateText(result.MatchedState()),
 		result.NetworkText(),
@@ -54,6 +55,7 @@ func writeIPLookupPlain(w io.Writer, result IPLookupSource) {
 		result.ASNText(),
 		result.ASNameText(),
 		result.ASDomainText(),
+		result.SourceText(),
 	)
 	tw.Flush()
 }
@@ -74,10 +76,11 @@ func writeIPLookupPretty(w io.Writer, result IPLookupSource) {
 		result.ASNText(),
 		result.ASNameText(),
 		result.ASDomainText(),
+		result.SourceText(),
 	}
 
 	t := table.New().
-		Headers("IP", "Match", "Network", "Country", "CountryCode", "Continent", "ContinentCode", "ASN", "ASName", "ASDomain").
+		Headers("IP", "Match", "Network", "Country", "CountryCode", "Continent", "ContinentCode", "ASN", "ASName", "ASDomain", "Source").
 		Border(lipgloss.RoundedBorder()).
 		BorderStyle(lipgloss.NewStyle().Foreground(ColorMuted)).
 		StyleFunc(func(rowIndex, col int) lipgloss.Style {
@@ -96,6 +99,13 @@ func writeIPLookupPretty(w io.Writer, result IPLookupSource) {
 				}
 				return s.Foreground(ColorError)
 			case 7, 8, 9:
+				return s.Foreground(ColorMuted)
+			case 10:
+				// Source 列用特殊颜色区分来源
+				src := row[10]
+				if src == "ipinfo" {
+					return s.Foreground(ColorAccent)
+				}
 				return s.Foreground(ColorMuted)
 			}
 			return s

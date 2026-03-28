@@ -29,6 +29,8 @@ GeoPrism/
 │   ├── resolver/        # DoH/DoT/DNS 查询与归一化
 │   ├── provider/        # Provider TOML 配置管理
 │   ├── ipdb/            # 离线 IP 库构建、编码与查询
+│   ├── ipinfo/          # ipinfo Lite API 客户端
+│   └── settings/        # 应用配置（ipinfo token、数据源优先级）
 ```
 
 说明：
@@ -56,7 +58,7 @@ rm geoprism
 
 ```text
 ~/.geoprism/
-├── config/              # providers.toml
+├── config/              # providers.toml, settings.toml
 └── ipdb/                # Pebble 离线 IP 库
 ```
 
@@ -65,6 +67,12 @@ Provider 配置说明：
 - 若文件不存在，程序会在首次启动时自动写入默认模板。
 - 配置文件使用 `[[providers]]` 数组表格式，每个 Provider 必须显式声明 `id`。
 - 旧的 `providers.json` 不再读取，也不会自动迁移；若检测到旧文件，程序会输出手动迁移警告。
+
+应用配置说明：
+- 程序从 `~/.geoprism/config/settings.toml` 读取应用级配置。
+- 若文件不存在，程序会在首次启动时自动写入默认模板。
+- 配置项：`ipinfo_token`（ipinfo API token）、`data_source_priority`（`ipdb-first` 或 `ipinfo-first`）。
+- `ipinfo_token` 为空时，不启用 ipinfo 在线查询功能。
 
 ## 开发规范
 
@@ -76,7 +84,7 @@ Provider 配置说明：
 ## 当前里程碑状态（代码现状）
 
 - M1 已完成：域名查询、多 Provider 并行、DoH/DoT/DNS、Provider 配置加载/列举/连通性测试、NS 服务器信息查询与默认模板
-- M2 已完成：离线 IP CSV 导入、Pebble 构建、DNS 结果本地 IP 匹配与单 IP 查询输出
+- M2 已完成：离线 IP CSV 导入、Pebble 构建、DNS 结果本地 IP 匹配与单 IP 查询输出、ipinfo 在线查询与回写、数据源优先级配置
 - M1 待补：Provider 导入/导出
 - M3 待实现：IP 库下载与更新
 - M4 待实现：历史、导出、日志诊断
@@ -89,9 +97,13 @@ Provider 配置说明：
 - `geoprism test --all|<name>` 测试 Provider 连通性
 - `geoprism providers` 与 `geoprism test` 在 TTY 下同样使用增强表格渲染；非 TTY 保持纯文本输出
 - 若本地存在可用离线库，会在 DNS 结果后追加 `IP 匹配详情`；TTY 与非 TTY 都保持表格语义
+- 若配置了 ipinfo token，ipdb 未命中的 IP 会自动调用 ipinfo API 查询，并将结果异步回写 ipdb
+- `data_source_priority` 支持 `ipdb-first`（默认）和 `ipinfo-first` 两种模式
+- IP 匹配详情和 IP 查询结果新增 `Source` 列，标识数据来源（`ipdb` / `ipinfo`）
+- 同一 IP 在多个 Provider 结果中出现时，ipinfo API 只调用一次（去重）
 - 若本地不存在离线库，仅打印告警并继续 DNS 查询，不中断主流程
 - `geoprism query ...` 或 `geoprism <domain>` 会在主查询后追加 `NS 服务器信息`
-- `geoprism <ip> -j` 输出单个 IP 结果对象，不复用 `query` 的 `domain/answers` 结构
+- `geoprism <ip> -j` 输出单个 IP 结果对象，包含 `source` 字段标识数据来源，不复用 `query` 的 `domain/answers` 结构
 - `geoprism -x <ip>` 或 `geoprism query <ip> -x` 执行反向 PTR 查询（IP → 域名），支持 IPv4 和 IPv6
 
 ### JSON 输出

@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"geoprism/backend/ipdb"
+	"geoprism/backend/ipinfo"
 	"geoprism/render"
 )
 
@@ -26,6 +27,7 @@ type IPLookupView struct {
 	ASN           string `json:"asn"`
 	ASName        string `json:"as_name"`
 	ASDomain      string `json:"as_domain"`
+	Source        string `json:"source,omitempty"` // 数据来源：ipdb / ipinfo
 }
 
 // IPText 返回 IP 地址。
@@ -78,22 +80,51 @@ func (v IPLookupView) ASDomainText() string {
 	return v.ASDomain
 }
 
-// LookupIP 查询单个 IP 的离线信息。
+// SourceText 返回数据来源。
+func (v IPLookupView) SourceText() string {
+	return v.Source
+}
+
+// LookupIP 查询单个 IP 的信息，合并 ipdb 和 ipinfo 结果。
 func (a *App) LookupIP(ip string) (IPLookupView, error) {
 	if net.ParseIP(ip) == nil {
 		return IPLookupView{}, fmt.Errorf("IP 格式非法: %s", ip)
 	}
 
-	if a.ensureIPDBStore() == nil {
+	// Step 1: ipdb 查询
+	var ipdbMatch ipdb.Match
+	hasIPDB := a.ensureIPDBStore() != nil
+	if hasIPDB {
+		var err error
+		ipdbMatch, err = a.ipdbStore.LookupIP(ip)
+		if err != nil {
+			return IPLookupView{}, err
+		}
+	}
+
+	// Step 2: ipinfo 查询
+	var ipinfoResp *ipinfo.Response
+	if a.ipinfoClient != nil {
+		ipinfoResp = a.lookupIPInfoSync(ip)
+	}
+
+	// 无数据可用
+	if !hasIPDB && ipinfoResp == nil {
 		return IPLookupView{}, a.ipdbLookupError()
 	}
 
-	match, err := a.ipdbStore.LookupIP(ip)
-	if err != nil {
-		return IPLookupView{}, err
+	// Step 3: 合并
+	merged, source := a.mergeIPInfo(ip, ipdbMatch, ipinfoResp)
+
+	// Step 4: 回写
+	if ipinfoResp != nil && a.ipdbStore != nil {
+		a.maybeWriteBack(ip, ipinfoResp, ipdbMatch)
 	}
 
-	return newIPLookupView(match), nil
+	// Step 5: 构建视图
+	view := newIPLookupView(merged)
+	view.Source = source
+	return view, nil
 }
 
 // runIPLookup 执行单个 IP 查询。
