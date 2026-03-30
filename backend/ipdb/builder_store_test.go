@@ -120,6 +120,80 @@ func TestBuildFromCSVAcceptsSingleIPRows(t *testing.T) {
 	assertLookup(t, store, "2001:db8::2", false, "")
 }
 
+func TestLookupCIDR(t *testing.T) {
+	rootDir := t.TempDir()
+	csvPath := writeCSVFixture(t, t.TempDir(), strings.Join([]string{
+		strings.Join(expectedCSVHeader, ","),
+		`1.0.0.0/24,Australia,AU,Oceania,OC,AS13335,"Cloudflare, Inc.",cloudflare.com`,
+		`1.0.1.0/24,China,CN,Asia,AS,,,`,
+		`2001:db8::/48,Testland,TT,Test,TS,AS64500,Example IPv6,ipv6.example`,
+		`2001:db8:1::/48,Testland,TT,Test,TS,,,`,
+	}, "\n"))
+
+	if _, err := BuildFromCSV(rootDir, BuildOptions{
+		CSVPath: csvPath,
+		BuildID: "cidr-build",
+	}); err != nil {
+		t.Fatalf("BuildFromCSV() error = %v", err)
+	}
+
+	store, err := OpenCurrent(rootDir)
+	if err != nil {
+		t.Fatalf("OpenCurrent() error = %v", err)
+	}
+	defer store.Close()
+
+	tests := []struct {
+		name         string
+		cidr         string
+		wantNetworks []string
+	}{
+		{
+			name:         "命中多条 IPv4 记录",
+			cidr:         "1.0.0.0/23",
+			wantNetworks: []string{"1.0.0.0/24", "1.0.1.0/24"},
+		},
+		{
+			name:         "命中覆盖查询起点的前一条记录",
+			cidr:         "1.0.0.128/25",
+			wantNetworks: []string{"1.0.0.0/24"},
+		},
+		{
+			name:         "命中多条 IPv6 记录",
+			cidr:         "2001:db8::/47",
+			wantNetworks: []string{"2001:db8::/48", "2001:db8:1::/48"},
+		},
+		{
+			name:         "无命中",
+			cidr:         "1.0.2.0/24",
+			wantNetworks: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			records, err := store.LookupCIDR(tt.cidr)
+			if err != nil {
+				t.Fatalf("LookupCIDR(%q) error = %v", tt.cidr, err)
+			}
+
+			gotNetworks := make([]string, 0, len(records))
+			for _, record := range records {
+				gotNetworks = append(gotNetworks, record.Network)
+			}
+
+			if len(gotNetworks) != len(tt.wantNetworks) {
+				t.Fatalf("LookupCIDR(%q) len = %d, want %d (%v)", tt.cidr, len(gotNetworks), len(tt.wantNetworks), gotNetworks)
+			}
+			for i := range tt.wantNetworks {
+				if gotNetworks[i] != tt.wantNetworks[i] {
+					t.Fatalf("LookupCIDR(%q) network[%d] = %q, want %q", tt.cidr, i, gotNetworks[i], tt.wantNetworks[i])
+				}
+			}
+		})
+	}
+}
+
 func assertLookup(t *testing.T, store *Store, ip string, wantMatched bool, wantNetwork string) {
 	t.Helper()
 

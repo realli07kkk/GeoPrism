@@ -2,7 +2,7 @@ package cli
 
 import (
 	"fmt"
-	"net"
+	"net/netip"
 	"os"
 
 	"geoprism/render"
@@ -12,10 +12,10 @@ const usage = `GeoPrism - DNS / IP 查询工具
 
 用法:
   geoprism <command> [flags]
-  geoprism <domain|ip>           快捷查询域名或直接匹配单个 IP
+  geoprism <domain|ip|cidr>      快捷查询域名、单个 IP 或 CIDR
 
 输出格式:
-  -j, --json                     JSON 格式输出（支持 query/providers/test 和快捷 domain/ip 查询，不支持 ipdb）
+  -j, --json                     JSON 格式输出（支持 query/providers/test 和快捷 domain/ip/cidr 查询，不支持 ipdb）
 
 命令:
   query       查询域名 DNS 记录
@@ -35,6 +35,8 @@ query 参数:
   geoprism example.com -j
   geoprism 1.1.1.1
   geoprism 1.1.1.1 -j
+  geoprism 1.0.0.0/24
+  geoprism 1.0.0.0/24 -j
   geoprism query example.com -t AAAA
   geoprism query 8.8.8.8 -x      # 反向查询：8.8.8.8 → dns.google
   geoprism -x 8.8.8.8            # 快捷反向查询
@@ -70,9 +72,16 @@ func isReverseFlag(arg string) bool {
 	return arg == "-x" || arg == "--ptr"
 }
 
-// isIPLiteral 判断输入是否是合法 IP 字面量。
-func isIPLiteral(arg string) bool {
-	return net.ParseIP(arg) != nil
+// parseIPInput 解析输入是否为合法 IP 或 CIDR。
+// 返回 (规范化后的输入, 是否为 CIDR, 是否合法)。
+func parseIPInput(arg string) (string, bool, bool) {
+	if addr, err := netip.ParseAddr(arg); err == nil {
+		return addr.String(), false, true
+	}
+	if prefix, err := netip.ParsePrefix(arg); err == nil {
+		return prefix.Masked().String(), true, true
+	}
+	return "", false, false
 }
 
 // Main 运行 CLI 入口。
@@ -142,8 +151,14 @@ func Main(args []string) {
 			app.runQuery(append([]string{"-x"}, cleanArgs...))
 			return
 		}
-		if isIPLiteral(cmd) {
-			app.runIPLookup(cleanArgs)
+		if ip, isCIDR, ok := parseIPInput(cmd); ok {
+			if isCIDR {
+				cleanArgs[0] = ip
+				app.runCIDRLookup(cleanArgs)
+			} else {
+				cleanArgs[0] = ip
+				app.runIPLookup(cleanArgs)
+			}
 		} else {
 			app.runQuery(cleanArgs)
 		}

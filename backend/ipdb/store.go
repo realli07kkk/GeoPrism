@@ -83,7 +83,7 @@ func OpenCurrent(rootDir string) (*Store, error) {
 
 // WriteRecord 向数据库写入单条 /32 或 /128 记录。
 func (s *Store) WriteRecord(record Record) error {
-	if s == nil {
+	if s == nil || s.db == nil {
 		return ErrNoCurrentDatabase
 	}
 
@@ -192,4 +192,125 @@ func (s *Store) LookupIP(ip string) (Match, error) {
 		Matched: true,
 		Record:  record,
 	}, nil
+}
+
+// LookupCIDR 查询与指定 CIDR 相交的所有离线记录。
+func (s *Store) LookupCIDR(cidr string) ([]Record, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrNoCurrentDatabase
+	}
+
+	queryPrefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return nil, fmt.Errorf("CIDR 格式非法: %w", err)
+	}
+	queryPrefix = queryPrefix.Masked()
+
+	queryStartKey, err := encodeAddrKey(queryPrefix.Addr())
+	if err != nil {
+		return nil, err
+	}
+
+	queryEndAddr, err := prefixLastAddr(queryPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("计算查询区间末尾失败: %w", err)
+	}
+	queryEndKey, err := encodeAddrKey(queryEndAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	lowerBound, upperBound, err := boundsForAddr(queryPrefix.Addr())
+	if err != nil {
+		return nil, err
+	}
+
+	iter, err := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: lowerBound,
+		UpperBound: upperBound,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建迭代器失败: %w", err)
+	}
+	defer iter.Close()
+
+	results := make([]Record, 0)
+
+	// 先检查 queryStart 前一条记录，避免漏掉覆盖 queryStart 的大网段。
+	valid := iter.SeekGE(queryStartKey)
+	if !valid {
+		if !iter.Last() {
+			return results, nil
+		}
+		record, recordPrefix, err := decodeIterRecord(iter)
+		if err != nil {
+			return nil, err
+		}
+		if prefixesOverlap(queryPrefix, recordPrefix) {
+			results = append(results, record)
+		}
+		return results, nil
+	}
+
+	if bytes.Compare(iter.Key(), queryStartKey) > 0 {
+		if iter.Prev() {
+			record, recordPrefix, err := decodeIterRecord(iter)
+			if err != nil {
+				return nil, err
+			}
+			if prefixesOverlap(queryPrefix, recordPrefix) {
+				results = append(results, record)
+			}
+		}
+		valid = iter.SeekGE(queryStartKey)
+	}
+
+	for ; valid; valid = iter.Next() {
+		if bytes.Compare(iter.Key(), queryEndKey) > 0 {
+			break
+		}
+
+		record, recordPrefix, err := decodeIterRecord(iter)
+		if err != nil {
+			return nil, err
+		}
+		if prefixesOverlap(queryPrefix, recordPrefix) {
+			results = append(results, record)
+		}
+	}
+
+	return results, nil
+}
+
+func decodeIterRecord(iter *pebble.Iterator) (Record, netip.Prefix, error) {
+	startAddr, _, err := decodeKeyAddr(iter.Key())
+	if err != nil {
+		return Record{}, netip.Prefix{}, fmt.Errorf("解析命中 key 失败: %w", err)
+	}
+
+	record, err := decodeRecordValue(iter.Value(), startAddr)
+	if err != nil {
+		return Record{}, netip.Prefix{}, fmt.Errorf("解析命中 value 失败: %w", err)
+	}
+
+	prefix, err := netip.ParsePrefix(record.Network)
+	if err != nil {
+		return Record{}, netip.Prefix{}, fmt.Errorf("恢复命中网段失败: %w", err)
+	}
+
+	return record, prefix.Masked(), nil
+}
+
+func prefixesOverlap(a, b netip.Prefix) bool {
+	a = a.Masked()
+	b = b.Masked()
+
+	if !a.IsValid() || !b.IsValid() {
+		return false
+	}
+	if a.Addr().BitLen() != b.Addr().BitLen() {
+		return false
+	}
+
+	return a.Contains(b.Addr()) || b.Contains(a.Addr())
 }

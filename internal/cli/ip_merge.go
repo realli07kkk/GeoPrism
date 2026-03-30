@@ -87,7 +87,10 @@ func (a *App) writeIPInfoRecord(record ipdb.Record) {
 
 // lookupIPInfoSync 同步调用 ipinfo API，超时 5 秒。
 func (a *App) lookupIPInfoSync(ip string) *ipinfo.Response {
-	if a.ipinfoClient == nil {
+	if a != nil && a.ipinfoLookup != nil {
+		return a.ipinfoLookup(ip)
+	}
+	if a == nil || a.ipinfoClient == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

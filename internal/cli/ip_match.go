@@ -104,7 +104,7 @@ func (a *App) collectIPMatches(answers []QueryAnswer) []IPMatchView {
 	}
 
 	hasIPDB := a.ensureIPDBStore() != nil
-	hasIPInfo := a.ipinfoClient != nil
+	hasIPInfo := a.hasIPInfoLookup()
 
 	if !hasIPDB && !hasIPInfo {
 		return nil

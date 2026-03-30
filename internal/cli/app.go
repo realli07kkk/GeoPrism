@@ -30,6 +30,7 @@ type App struct {
 
 	settings     *settings.SettingsStore
 	ipinfoClient *ipinfo.Client // token 为空时为 nil
+	ipinfoLookup func(string) *ipinfo.Response
 }
 
 // NewApp 创建并初始化 App
@@ -116,6 +117,11 @@ func (a *App) ensureIPDBStore() *ipdb.Store {
 	a.recordIPDBInitError(err)
 
 	return a.ipdbStore
+}
+
+// hasIPInfoLookup 返回是否可执行 ipinfo 查询。
+func (a *App) hasIPInfoLookup() bool {
+	return a != nil && (a.ipinfoClient != nil || a.ipinfoLookup != nil)
 }
 
 // setIPDBWarning 设置离线 IP 库警告信息。

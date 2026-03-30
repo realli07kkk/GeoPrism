@@ -7,21 +7,26 @@ import (
 	"geoprism/backend/resolver"
 )
 
-func TestIsIPLiteral(t *testing.T) {
+func TestParseIPInput(t *testing.T) {
 	tests := []struct {
-		input string
-		want  bool
+		input    string
+		wantText string
+		wantCIDR bool
+		wantOK   bool
 	}{
-		{input: "1.1.1.1", want: true},
-		{input: "2606:4700:4700::1111", want: true},
-		{input: "example.com", want: false},
-		{input: "999.999.999.999", want: false},
+		{input: "1.1.1.1", wantText: "1.1.1.1", wantCIDR: false, wantOK: true},
+		{input: "2606:4700:4700::1111", wantText: "2606:4700:4700::1111", wantCIDR: false, wantOK: true},
+		{input: "47.101.108.7/24", wantText: "47.101.108.0/24", wantCIDR: true, wantOK: true},
+		{input: "2001:db8::1/32", wantText: "2001:db8::/32", wantCIDR: true, wantOK: true},
+		{input: "example.com", wantText: "", wantCIDR: false, wantOK: false},
+		{input: "999.999.999.999", wantText: "", wantCIDR: false, wantOK: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			if got := isIPLiteral(tt.input); got != tt.want {
-				t.Fatalf("isIPLiteral(%q) = %v, want %v", tt.input, got, tt.want)
+			gotText, gotCIDR, gotOK := parseIPInput(tt.input)
+			if gotOK != tt.wantOK || gotCIDR != tt.wantCIDR || gotText != tt.wantText {
+				t.Fatalf("parseIPInput(%q) = (%q, %v, %v), want (%q, %v, %v)", tt.input, gotText, gotCIDR, gotOK, tt.wantText, tt.wantCIDR, tt.wantOK)
 			}
 		})
 	}

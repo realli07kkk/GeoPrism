@@ -104,7 +104,7 @@ func (a *App) LookupIP(ip string) (IPLookupView, error) {
 
 	// Step 2: ipinfo 查询
 	var ipinfoResp *ipinfo.Response
-	if a.ipinfoClient != nil {
+	if a.hasIPInfoLookup() {
 		ipinfoResp = a.lookupIPInfoSync(ip)
 	}
 

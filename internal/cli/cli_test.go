@@ -265,6 +265,62 @@ func TestCLIIPLookupText(t *testing.T) {
 	}
 }
 
+func TestCLICIDRLookupJSON(t *testing.T) {
+	home := t.TempDir()
+	buildCLIIPDB(t, home)
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"前导 -j", []string{"-j", "1.0.0.0/24"}},
+		{"后置 -j", []string{"1.0.0.0/24", "-j"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runCLIWithHome(home, tt.args...)
+			if exitCode != 0 {
+				t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
+			}
+
+			var result map[string]interface{}
+			if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+				t.Fatalf("output should be valid JSON: %v, got: %s", err, stdout)
+			}
+			if result["query_cidr"] != "1.0.0.0/24" {
+				t.Fatalf("query_cidr = %v, want %q", result["query_cidr"], "1.0.0.0/24")
+			}
+			if result["matched"] != true {
+				t.Fatalf("matched = %v, want true", result["matched"])
+			}
+			if result["match_count"] != float64(1) {
+				t.Fatalf("match_count = %v, want 1", result["match_count"])
+			}
+			matches, ok := result["matches"].([]interface{})
+			if !ok || len(matches) != 1 {
+				t.Fatalf("matches = %#v, want one item", result["matches"])
+			}
+		})
+	}
+}
+
+func TestCLICIDRLookupText(t *testing.T) {
+	home := t.TempDir()
+	buildCLIIPDB(t, home)
+
+	stdout, stderr, exitCode := runCLIWithHome(home, "1.0.0.0/24")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
+	}
+
+	for _, token := range []string{"CIDR 查询结果", "1.0.0.0/24", "MatchCount: 1", "1.0.0.0/24"} {
+		if !strings.Contains(stdout, token) {
+			t.Fatalf("stdout missing token %q:\n%s", token, stdout)
+		}
+	}
+}
+
 func TestCLIIPLookupFlagErrorJSON(t *testing.T) {
 	_, stderr, exitCode := runCLI("1.0.0.1", "-j", "-bogus")
 	if exitCode == 0 {
