@@ -52,9 +52,16 @@ func TestCLIQueryJSONIncludesNSInfo(t *testing.T) {
 			if _, ok := nsInfoMap["query_time_ms"]; !ok {
 				t.Error("ns_info should contain 'query_time_ms' field")
 			}
+			if _, ok := nsInfoMap["query_domain"]; !ok {
+				t.Error("ns_info should contain 'query_domain' field")
+			}
 
 			// 验证 available=true 时有 servers
 			if available, _ := nsInfoMap["available"].(bool); available {
+				if resolvedZone, _ := nsInfoMap["resolved_zone"].(string); resolvedZone == "" {
+					t.Error("ns_info should contain non-empty 'resolved_zone' when available=true")
+				}
+
 				servers, ok := nsInfoMap["servers"].([]interface{})
 				if !ok {
 					t.Fatal("ns_info.servers should be an array when available=true")
@@ -88,6 +95,11 @@ func TestCLIQueryTextIncludesNSInfo(t *testing.T) {
 	// 验证输出包含 NS 服务器信息标题
 	if !strings.Contains(stdout, "NS 服务器信息") {
 		t.Error("output should contain 'NS 服务器信息'")
+	}
+
+	// 验证输出包含实际命中的 zone
+	if !strings.Contains(stdout, "实际命中 Zone") {
+		t.Error("output should contain '实际命中 Zone'")
 	}
 
 	// 验证输出包含 NS 查询耗时
@@ -178,9 +190,10 @@ func TestCLIQueryNSDeterministicOrder(t *testing.T) {
 // TestSelectNSQueryError 测试错误选择优先级
 func TestSelectNSQueryError(t *testing.T) {
 	tests := []struct {
-		name    string
-		answers []resolver.DNSAnswer
-		wantErr string
+		name           string
+		answers        []resolver.DNSAnswer
+		wantErr        string
+		wantDefinitive bool
 	}{
 		{
 			name: "NXDOMAIN 优先级最高",
@@ -189,7 +202,8 @@ func TestSelectNSQueryError(t *testing.T) {
 				{Success: false, RCodeName: "NXDOMAIN"},
 				{Success: false, RCodeName: "REFUSED"},
 			},
-			wantErr: "域名不存在 (NXDOMAIN)",
+			wantErr:        "域名不存在 (NXDOMAIN)",
+			wantDefinitive: true,
 		},
 		{
 			name: "SERVFAIL 次之",
@@ -198,7 +212,8 @@ func TestSelectNSQueryError(t *testing.T) {
 				{Success: false, RCodeName: "SERVFAIL"},
 				{Success: false, Error: "timeout"},
 			},
-			wantErr: "服务器错误 (SERVFAIL)",
+			wantErr:        "服务器错误 (SERVFAIL)",
+			wantDefinitive: true,
 		},
 		{
 			name: "REFUSED 再次",
@@ -206,7 +221,8 @@ func TestSelectNSQueryError(t *testing.T) {
 				{Success: false, Error: "timeout"},
 				{Success: false, RCodeName: "REFUSED"},
 			},
-			wantErr: "查询被拒绝 (REFUSED)",
+			wantErr:        "查询被拒绝 (REFUSED)",
+			wantDefinitive: true,
 		},
 		{
 			name: "其他错误按字母排序取第一个",
@@ -214,22 +230,27 @@ func TestSelectNSQueryError(t *testing.T) {
 				{Success: false, Error: "timeout"},
 				{Success: false, Error: "connection refused"},
 			},
-			wantErr: "connection refused",
+			wantErr:        "connection refused",
+			wantDefinitive: true,
 		},
 		{
 			name: "无错误时返回默认消息",
 			answers: []resolver.DNSAnswer{
 				{Success: true, Answers: nil},
 			},
-			wantErr: "未找到 NS 记录",
+			wantErr:        nsQueryErrorNoRecord,
+			wantDefinitive: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := selectNSQueryError(tt.answers)
-			if got != tt.wantErr {
-				t.Errorf("selectNSQueryError() = %q, want %q", got, tt.wantErr)
+			if got.Message != tt.wantErr {
+				t.Errorf("selectNSQueryError().Message = %q, want %q", got.Message, tt.wantErr)
+			}
+			if got.Definitive != tt.wantDefinitive {
+				t.Errorf("selectNSQueryError().Definitive = %v, want %v", got.Definitive, tt.wantDefinitive)
 			}
 		})
 	}
@@ -279,9 +300,113 @@ func TestSelectNSError(t *testing.T) {
 	}
 }
 
+func TestBuildNSZoneCandidates(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain string
+		want   []string
+	}{
+		{
+			name:   "长域名逐级向上探测",
+			domain: "es-cn-7mz29trkm00037bfs.public.elasticsearch.aliyuncs.com",
+			want: []string{
+				"es-cn-7mz29trkm00037bfs.public.elasticsearch.aliyuncs.com",
+				"public.elasticsearch.aliyuncs.com",
+				"elasticsearch.aliyuncs.com",
+				"aliyuncs.com",
+			},
+		},
+		{
+			name:   "去除尾点并转小写",
+			domain: "WWW.Example.COM.",
+			want: []string{
+				"www.example.com",
+				"example.com",
+			},
+		},
+		{
+			name:   "单 label",
+			domain: "localhost",
+			want:   []string{"localhost"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildNSZoneCandidates(tt.domain)
+			if len(got) != len(tt.want) {
+				t.Fatalf("buildNSZoneCandidates() len = %d, want %d, got=%v", len(got), len(tt.want), got)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("buildNSZoneCandidates()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestSelectNSDiscoveryError(t *testing.T) {
+	tests := []struct {
+		name     string
+		attempts []nsZoneAttempt
+		wantErr  string
+	}{
+		{
+			name: "中间层 NXDOMAIN 但出现 NODATA 时返回通用错误",
+			attempts: []nsZoneAttempt{
+				{
+					Domain:  "public.elasticsearch.aliyuncs.com",
+					Answers: []resolver.DNSAnswer{{Success: false, RCodeName: "NXDOMAIN"}},
+				},
+				{
+					Domain:  "elasticsearch.aliyuncs.com",
+					Answers: []resolver.DNSAnswer{{Success: true, RCodeName: "NOERROR", Answers: nil}},
+				},
+			},
+			wantErr: "未找到可用 NS zone",
+		},
+		{
+			name: "全部 NXDOMAIN 时保留确定错误",
+			attempts: []nsZoneAttempt{
+				{
+					Domain:  "missing.invalid",
+					Answers: []resolver.DNSAnswer{{Success: false, RCodeName: "NXDOMAIN"}},
+				},
+				{
+					Domain:  "invalid",
+					Answers: []resolver.DNSAnswer{{Success: false, RCodeName: "NXDOMAIN"}},
+				},
+			},
+			wantErr: "域名不存在 (NXDOMAIN)",
+		},
+		{
+			name: "传输错误向上透传",
+			attempts: []nsZoneAttempt{
+				{
+					Domain:  "example.com",
+					Answers: []resolver.DNSAnswer{{Success: false, Error: "timeout", RCodeName: "ERROR"}},
+				},
+			},
+			wantErr: "timeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := selectNSDiscoveryError(tt.attempts)
+			if got != tt.wantErr {
+				t.Fatalf("selectNSDiscoveryError() = %q, want %q", got, tt.wantErr)
+			}
+		})
+	}
+}
+
 // TestNSInfoViewInterface 测试 NSInfoView 接口实现
 func TestNSInfoViewInterface(t *testing.T) {
 	view := NSInfoView{
+		QueryDomain:  "www.example.com",
+		ResolvedZone: "example.com",
 		Servers: []NSRecordView{
 			{Name: "ns1.example.com", IPs: []NSIPInfo{{IP: "1.1.1.1"}}},
 			{Name: "ns2.example.com", IPs: []NSIPInfo{{IP: "2.2.2.2"}}},
@@ -296,6 +421,10 @@ func TestNSInfoViewInterface(t *testing.T) {
 
 	if view.QueryTimeMs() != 100 {
 		t.Errorf("QueryTimeMs() = %d, want 100", view.QueryTimeMs())
+	}
+
+	if view.ResolvedZoneText() != "example.com" {
+		t.Errorf("ResolvedZoneText() = %q", view.ResolvedZoneText())
 	}
 
 	if !view.IsAvailable() {

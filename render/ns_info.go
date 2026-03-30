@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/charmbracelet/lipgloss"
@@ -34,6 +35,7 @@ type NSInfoSource interface {
 	ServerCount() int
 	ServerAt(i int) any // 返回 any，由渲染函数做类型断言
 	QueryTimeMs() int64
+	ResolvedZoneText() string
 	IsAvailable() bool
 	ErrorText() string
 }
@@ -71,6 +73,10 @@ func isNilNSInfoSource(data NSInfoSource) bool {
 // writeNSInfoPlain 纯文本表格输出。
 func writeNSInfoPlain(w io.Writer, data NSInfoSource) {
 	fmt.Fprint(w, "\nNS 服务器信息\n\n")
+
+	if zone := strings.TrimSpace(data.ResolvedZoneText()); zone != "" {
+		fmt.Fprintf(w, "实际命中 Zone: %s\n\n", zone)
+	}
 
 	if !data.IsAvailable() {
 		fmt.Fprintf(w, "错误: %s\n\n", data.ErrorText())
@@ -128,6 +134,11 @@ func writeNSInfoPlain(w io.Writer, data NSInfoSource) {
 func writeNSInfoPretty(w io.Writer, data NSInfoSource) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, HeaderStyle.Render("NS 服务器信息"))
+
+	if zone := strings.TrimSpace(data.ResolvedZoneText()); zone != "" {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, MutedStyle.Render(fmt.Sprintf("实际命中 Zone: %s", zone)))
+	}
 
 	if !data.IsAvailable() {
 		fmt.Fprintln(w)

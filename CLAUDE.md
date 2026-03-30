@@ -66,12 +66,12 @@ Provider 配置说明：
 - 程序默认从 `~/.geoprism/config/providers.toml` 读取 Provider 配置。
 - 若文件不存在，程序会在首次启动时自动写入默认模板。
 - 配置文件使用 `[[providers]]` 数组表格式，每个 Provider 必须显式声明 `id`。
-- 旧的 `providers.json` 不再读取，也不会自动迁移；若检测到旧文件，程序会输出手动迁移警告。
+- 旧的 `providers.json` 不再读取，也不会自动迁移；若首次启动时 `providers.toml` 不存在且检测到旧文件，程序会输出手动迁移警告。
 
 应用配置说明：
 - 程序从 `~/.geoprism/config/settings.toml` 读取应用级配置。
 - 若文件不存在，程序会在首次启动时自动写入默认模板。
-- 配置项：`ipinfo_token`（ipinfo API token）、`data_source_priority`（`ipdb-first` 或 `ipinfo-first`）。
+- 配置项位于 `[settings]` 表下：`ipinfo_token`（ipinfo API token）、`data_source_priority`（`ipdb-first` 或 `ipinfo-first`）。
 - `ipinfo_token` 为空时，不启用 ipinfo 在线查询功能。
 
 ## 开发规范
@@ -92,7 +92,7 @@ Provider 配置说明：
 ## 当前 CLI 行为
 
 - `geoprism query ...` 在 TTY 下使用增强表格渲染；非 TTY 保持原有纯文本表格协议
-- `geoprism <ip>` 会直接查询本地离线 IP 库；若离线库不存在则报错退出
+- `geoprism <ip>` 会优先使用本地离线 IP 库；若本地无离线库但已配置 `ipinfo_token`，会回退到 ipinfo 在线查询；两者都不可用时才报错退出
 - `geoprism providers` 列出当前 TOML 配置中的 Provider
 - `geoprism test --all|<name>` 测试 Provider 连通性
 - `geoprism providers` 与 `geoprism test` 在 TTY 下同样使用增强表格渲染；非 TTY 保持纯文本输出
@@ -114,5 +114,5 @@ Provider 配置说明：
 - 不支持的命令：`ipdb`（使用 `-j` 时会输出警告并忽略）
 - 前导和后置参数都支持：`geoprism -j providers` 或 `geoprism providers -j`
 - 快捷查询也支持：`geoprism example.com -j`、`geoprism 1.1.1.1 -j`
-- `query` 会输出 `ns_info` 字段，包含可用性、查询耗时、NS 服务器列表或错误信息
+- `query` 会输出 `ns_info` 字段，包含 `query_domain`、`resolved_zone`、可用性、查询耗时、NS 服务器列表或错误信息
 - 错误信息在 JSON 模式下输出到 stderr，格式为 `{"error":"..."}`

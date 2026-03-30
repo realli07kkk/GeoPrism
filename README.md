@@ -103,8 +103,8 @@ backend/
 - 若配置了 ipinfo token，ipdb 未命中的 IP 会自动调用 ipinfo API 查询并异步回写；新增 `Source` 列标识数据来源
 - `data_source_priority` 支持 `ipdb-first`（默认）和 `ipinfo-first` 两种模式
 - 同一 IP 在多个 Provider 结果中出现时，ipinfo API 只调用一次
-- `query` 会追加 `NS 服务器信息`；JSON 模式下包含 `ns_info`
-- `geoprism <ip>` 依赖本地离线 IP 库；若离线库不存在，会直接报错并提示先执行 `geoprism ipdb build --csv /absolute/path/ipinfo_lite.csv`
+- `query` 会追加 `NS 服务器信息`；若目标域名本身不是 zone apex，会自动向上探测真实 zone，并显示 `实际命中 Zone`
+- `geoprism <ip>` 会优先使用本地离线 IP 库；若本地无离线库但已配置 `ipinfo_token`，会回退到 ipinfo 在线查询；两者都不可用时，才会报错并提示先执行 `geoprism ipdb build --csv /absolute/path/ipinfo_lite.csv`
 - `geoprism <ip> -j` 输出单个 IP 结果对象，包含 `source` 字段标识数据来源，不复用 `query` 的 `domain/answers` 结构
 
 ### JSON 输出模式
@@ -114,7 +114,7 @@ backend/
 - 支持：`query`、`providers`、`test`（前导或后置参数均可）
 - 快捷查询同样支持：`geoprism example.com -j`、`geoprism 1.1.1.1 -j`
 - 不支持：`ipdb`（会输出警告并忽略）
-- `query` 会包含 `ns_info` 字段，包含可用性、查询耗时、NS 服务器列表或错误信息
+- `query` 会包含 `ns_info` 字段，包含 `query_domain`、`resolved_zone`、可用性、查询耗时、NS 服务器列表或错误信息
 - 错误信息输出到 stderr，格式为 `{"error":"..."}`
 
 ## 数据目录
@@ -129,4 +129,10 @@ Provider 配置说明：
 - 程序默认从 `~/.geoprism/config/providers.toml` 读取 Provider 配置。
 - 若文件不存在，程序会在首次启动时自动写入默认模板。
 - 配置文件使用 `[[providers]]` 数组表格式，每个 Provider 必须显式声明 `id`。
-- 旧的 `providers.json` 不再读取，也不会自动迁移；若检测到旧文件，程序会输出手动迁移警告。
+- 旧的 `providers.json` 不再读取，也不会自动迁移；若首次启动时 `providers.toml` 不存在且检测到旧文件，程序会输出手动迁移警告。
+
+应用配置说明：
+- 程序从 `~/.geoprism/config/settings.toml` 读取应用级配置。
+- 若文件不存在，程序会在首次启动时自动写入默认模板。
+- 配置项位于 `[settings]` 表下：`ipinfo_token`（ipinfo API token）、`data_source_priority`（`ipdb-first` 或 `ipinfo-first`）。
+- `ipinfo_token` 为空时，不启用 ipinfo 在线查询功能。
