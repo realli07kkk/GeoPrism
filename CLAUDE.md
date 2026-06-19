@@ -111,3 +111,28 @@ Provider 配置说明：
 - CIDR 快捷查询返回独立 JSON 结构，不复用单 IP 查询的 `ip/matched/network` 结构
 - 错误信息在 JSON 模式下输出到 stderr，格式为 `{"error":"..."}`
 
+## CodeStable 知识库
+
+本项目已接入 [CodeStable](https://github.com/) 工作流体系，所有 spec / 架构 / 沉淀类文档统一存放在 `.codestable/` 目录下，供 AI Agent（及人类协作者）阅读。**AI Agent 在动手改代码或设计方案前，应优先查阅本目录相关文档对齐现状与边界。**
+
+### 目录结构与使用场景
+
+| 路径 | 内容 | 什么时候读 |
+|---|---|---|
+| `.codestable/attention.md` | CodeStable 子技能启动必读的项目注意事项（编译 / 测试 / 路径 / 凭证等碎片知识） | **每次开始任何 CodeStable 工作流前必读**；新增硬约束用 `cs-note` 追加 |
+| `.codestable/requirements/` | 能力愿景层（"用户需要什么、系统提供什么能力"），含中心索引 `VISION.md` 和按能力拆分的 req | 想知道"某个能力为什么存在、边界在哪"时读；新增 / 升级能力用 `cs-req` |
+| `.codestable/architecture/` | 架构层（"用什么结构实现"），`ARCHITECTURE.md` 是总入口，子系统文档按 `{type}-{slug}.md` 平铺 | 改某模块前读对应 doc 定位代码、理解模块边界；代码变化后用 `cs-arch` 同步 |
+| `.codestable/roadmap/` | 规划层（"大需求怎么分步实现 + 模块怎么切"） | 做长期规划时读；拆 feature 用 `cs-roadmap` |
+| `.codestable/features/` | feature spec 聚合根（每个 feature 一个 `YYYY-MM-DD-{slug}/` 目录，含 brainstorm / design / checklist / acceptance） | 排查某功能为什么这么实现时读；新功能用 `cs-feat` |
+| `.codestable/issues/` | issue spec 聚合根（report / analysis / fix-note） | 排查历史 bug 时读；报 bug 用 `cs-issue` |
+| `.codestable/compound/` | 沉淀类文档（learning / trick / decision / explore），文件名 `YYYY-MM-DD-{doc_type}-{slug}.md` | 动手前搜已有经验；沉淀知识用 `cs-learn` / `cs-trick` / `cs-decide` / `cs-explore` |
+| `.codestable/tools/` | 跨工作流共享脚本（`search-yaml.py` / `validate-yaml.py`） | 检索沉淀、校验 yaml 时用 |
+| `.codestable/reference/` | 共享参考文档（`shared-conventions.md` 命名约定、`system-overview.md` 体系总览等） | 不确定文档该放哪、怎么命名时读 |
+
+### 当前已有文档
+
+- **需求**：`requirements/multi-provider-dns-query.md`（多 Provider DNS 查询）、`requirements/offline-ip-lookup.md`（离线 IP / CIDR 查询），索引见 `requirements/VISION.md`
+- **架构**：`architecture/ARCHITECTURE.md`（总入口）、`architecture/dns-query.md`、`architecture/ip-lookup.md`
+
+> 注：本文件 `CLAUDE.md` 与 `AGENTS.md` 是同一份内容（`AGENTS.md` 是指向 `CLAUDE.md` 的软链接），修改实际文件 `CLAUDE.md` 即可。CodeStable 子技能的启动注意事项入口固定为 `.codestable/attention.md`，不依赖本文件。
+
