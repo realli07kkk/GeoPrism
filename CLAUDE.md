@@ -32,19 +32,7 @@ GeoPrism/
 │   ├── ipdb/            # 离线 IP 库构建、编码与查询
 │   ├── ipinfo/          # ipinfo Lite API 客户端
 │   └── settings/        # 应用配置（ipinfo token、数据源优先级）
-├── codestable/          # CodeStable 知识库 —— 项目需求、架构、特性、问题等结构化文档
-│   ├── architecture/    # 架构文档（ARCHITECTURE.md 为总入口）
-│   ├── requirements/    # 需求文档：描述已有能力"为谁解决什么问题、边界在哪"
-│   ├── features/        # 功能方案与实现记录
-│   ├── issues/          # 问题报告、根因分析、修复记录
-│   ├── roadmap/         # 规划层：子 feature 清单、依赖、状态
-│   ├── compound/        # 沉淀文档：learning / trick / decision / explore
-│   ├── tools/           # 跨工作流共享脚本
-│   └── reference/       # 共享参考：约定、口径、维护者笔记
 ```
-
-说明：
-- `M3` / `M4` 对应的 `backend/updater`、`backend/storage` 当前尚未创建，文档只保留里程碑说明，不再把它们写成现有目录。
 
 ## 开发命令
 
@@ -92,14 +80,6 @@ Provider 配置说明：
 - 模块化设计，按职责分离
 - Provider 配置使用结构体管理
 
-## 当前里程碑状态（代码现状）
-
-- M1 已完成：域名查询、多 Provider 并行、DoH/DoT/DNS、Provider 配置加载/列举/连通性测试、NS 服务器信息查询与默认模板
-- M2 已完成：离线 IP CSV 导入、Pebble 构建、DNS 结果本地 IP 匹配、单 IP / CIDR 查询输出、ipinfo 在线查询与回写、数据源优先级配置
-- M1 待补：Provider 导入/导出
-- M3 待实现：IP 库下载与更新
-- M4 待实现：历史、导出、日志诊断
-
 ## 当前 CLI 行为
 
 - `geoprism query ...` 在 TTY 下使用增强表格渲染；非 TTY 保持原有纯文本表格协议
@@ -131,34 +111,3 @@ Provider 配置说明：
 - CIDR 快捷查询返回独立 JSON 结构，不复用单 IP 查询的 `ip/matched/network` 结构
 - 错误信息在 JSON 模式下输出到 stderr，格式为 `{"error":"..."}`
 
-## CodeStable 知识库
-
-项目使用 [CodeStable](https://github.com/anthropics/claude-code) 体系管理非代码知识资产。`codestable/` 目录是项目的结构化文档中心，存储需求、架构、特性方案、问题记录、决策沉淀等所有非代码知识。
-
-### 目录结构与使用场景
-
-| 目录 | 内容 | 何时阅读 |
-|---|---|---|
-| `codestable/architecture/` | 系统架构文档：模块职责、依赖关系、数据流、关键决策 | 新功能开发、架构变更、重构前、理解模块边界 |
-| `codestable/requirements/` | 能力需求描述：每条写"为谁解决什么问题、边界在哪" | 新功能开发前对齐已有能力、了解功能边界 |
-| `codestable/features/` | 功能方案与实现记录：design 设计稿、checklist、acceptance 验收报告 | 接手进行中的功能、了解历史功能的设计决策 |
-| `codestable/issues/` | 问题记录：report 报告、analyze 根因分析、fix-note 修复记录 | Bug 修复前查阅历史、理解已知问题 |
-| `codestable/roadmap/` | 规划层：大需求的子 feature 拆解、依赖关系、进度状态 | 了解未来方向、多 feature 协调 |
-| `codestable/compound/` | 沉淀文档四类：`learning`（经验教训）、`trick`（可复用技巧）、`decision`（架构/技术选型决定）、`explore`（代码探索结论） | 做技术选型时查 decision、遇到相似问题时查 learning、不熟悉模块时查 explore |
-| `codestable/tools/` | 跨工作流共享脚本（YAML 搜索、校验等） | 需要搜索 compound 文档时使用 `search-yaml.py` |
-| `codestable/reference/` | 共享参考：`shared-conventions.md`（命名与结构约定）、`system-overview.md`（CodeStable 体系总览）、`maintainer-notes.md`（维护者笔记） | 了解项目约定、不确定文档该放哪时查 shared-conventions.md |
-
-### AI Agent 行为要求
-
-进行以下任务时，**必须先查阅对应文档再动手**，避免凭猜测做决定：
-
-| 任务 | 必读文档 | 选读文档 |
-|---|---|---|
-| 新功能开发 | `architecture/ARCHITECTURE.md`、相关 `requirements/*.md` | `compound/` 下相关 decision/explore |
-| Bug 修复 | `issues/` 下相关 issue 记录 | `architecture/` 下相关模块文档 |
-| 架构变更 | `architecture/ARCHITECTURE.md` 及相关模块文档 | `compound/` 下相关 decision |
-| 重构优化 | `architecture/` 下相关模块文档、`reference/shared-conventions.md` | `compound/` 下相关 learning/trick |
-| 技术选型 | `reference/shared-conventions.md` | `compound/` 下相关 decision |
-| 不了解某模块 | `architecture/` 下对应模块文档 | `compound/` 下相关 explore |
-
-`codestable/` 的权威结构和命名约定以 `codestable/reference/shared-conventions.md` 为准。

@@ -4,15 +4,12 @@ GeoPrism 是一个 macOS 本地运行的 DNS / IP 查询 CLI 工具，使用纯 
 
 ## 当前实现状态
 
-- 已完成（M1）：域名查询（A/AAAA/CNAME/TXT/NS/MX/SOA/PTR）
-- 已完成（M1）：多 Provider 并行查询
-- 已完成（M1）：DoH / DoT / DNS(UDP) 支持
-- 已完成（M1）：Provider 配置加载、列举、连通性测试与默认模板
-- 已完成（M1）：NS 服务器信息查询
-- 已完成（M2）：离线 IP 库导入、解析匹配、单 IP / CIDR 查询、ipinfo 在线查询与回写、数据源优先级配置
-- 待实现：Provider 导入/导出
-- 待实现：IP 库下载更新（M3）
-- 待实现：历史与导出、日志诊断（M4）
+- 域名查询（A/AAAA/CNAME/TXT/NS/MX/SOA/PTR）
+- 多 Provider 并行查询
+- DoH / DoT / DNS(UDP) 支持
+- Provider 配置加载、列举、连通性测试与默认模板
+- NS 服务器信息查询
+- 离线 IP 库导入、解析匹配、单 IP / CIDR 查询、ipinfo 在线查询与回写、数据源优先级配置
 
 ## 技术栈
 
@@ -95,9 +92,6 @@ backend/
   ipinfo/     # ipinfo Lite API 客户端
   settings/   # 应用配置（ipinfo token、数据源优先级）
 ```
-
-说明：
-- `backend/updater` 和 `backend/storage` 目前仍属于 M3 / M4 规划，仓库里尚未创建对应目录。
 
 ## 输出行为
 
