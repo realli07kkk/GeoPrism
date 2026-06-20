@@ -1,0 +1,43 @@
+roadmap: ipdb-v2-lpm
+created: 2026-06-20
+
+items:
+  - slug: ipdb-v2-codec
+    description: v2 的 key/value 编解码层（primary/cidr/overlay 三套 key + value v2 含 overlay 元数据段），纯编码加单测，无对外行为变化
+    depends_on: []
+    status: planned
+    feature: null
+    minimal_loop: false
+    notes: 契约见 roadmap §4.1/§4.2，是 base 与 overlay 的共同地基
+
+  - slug: ipdb-v2-base-lpm
+    description: builder 写 v2 primary 索引 + BaseStore.LookupIP 改为真正的 LPM ladder + OpenCurrent 识别 v1 旧库给重建提示
+    depends_on: [ipdb-v2-codec]
+    status: planned
+    feature: null
+    minimal_loop: true
+    notes: 单独即可演示重叠记录下单 IP 返回正确最长前缀匹配
+
+  - slug: ipdb-v2-cidr-index
+    description: builder 增写 cidr 二级索引 + BaseStore.LookupCIDR 改用二级索引按起始地址区间扫描
+    depends_on: [ipdb-v2-base-lpm]
+    status: planned
+    feature: null
+    minimal_loop: false
+    notes: 需在 base 已是 v2 双写格式之上
+
+  - slug: ipdb-overlay-store
+    description: 新增独立 overlay 存储（TTL + 元数据）+ 回写改写入 overlay（PutOverlay），废弃向 base keyspace 写单 IP
+    depends_on: [ipdb-v2-codec]
+    status: planned
+    feature: null
+    minimal_loop: false
+    notes: 落地后正式取代 issue 2026-06-20-ipdb-writeback-breaks-lpm 的止血
+
+  - slug: ipdb-lookup-integration
+    description: Store 聚合 base+overlay，cli 各路径切到新接口（LookupIP/LookupOverlay/PutOverlay/Close），移除旧 WriteRecord 调用
+    depends_on: [ipdb-v2-base-lpm, ipdb-overlay-store]
+    status: planned
+    feature: null
+    minimal_loop: false
+    notes: 合并策略仍复用现有 mergeIPInfo，不改优先级语义
