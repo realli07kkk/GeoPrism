@@ -112,6 +112,12 @@ func (a *App) ensureIPDBStore() *ipdb.Store {
 	if err == nil {
 		a.ipdbStore = ipdbStore
 		a.recordIPDBInitError(nil)
+		// v1 格式库历史上允许运行期把 ipinfo /32、/128 回写进 base keyspace，
+		// 破坏 base "网段不重叠" 不变量（issue 2026-06-20-ipdb-writeback-breaks-lpm）。
+		// 在线回写现已停用；已存在的 v1 库无法判断是否被污染，统一提示用户重建。
+		if ipdbStore.Metadata().FormatVersion < 2 {
+			a.setIPDBWarning("检测到旧版离线库格式，在线回写已停用；如曾启用 ipinfo 回写，请重新执行 geoprism ipdb build --csv <绝对路径> 重建离线库")
+		}
 		return a.ipdbStore
 	}
 	a.recordIPDBInitError(err)

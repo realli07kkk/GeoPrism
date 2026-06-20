@@ -96,8 +96,8 @@ func (a *App) printIPDBWarning() {
 }
 
 // collectIPMatches 收集所有 A/AAAA 记录的离线匹配结果。
-// ipdb 未命中的 IP 会通过 ipinfo API 查询；
-// ipinfo-first 模式下命中的 IP 也会调 ipinfo 并对比回写。
+// ipdb 未命中或 ipinfo-first 时会查询 ipinfo；结果仅用于当次合并，不回写 base
+// （在线回写已停用，见 issue 2026-06-20-ipdb-writeback-breaks-lpm）。
 func (a *App) collectIPMatches(answers []QueryAnswer) []IPMatchView {
 	if a == nil {
 		return nil
@@ -165,10 +165,9 @@ func (a *App) collectIPMatches(answers []QueryAnswer) []IPMatchView {
 						Record:  ipinfoRec,
 					}
 					source = "ipinfo"
-					// 异步回写 ipdb
-					if a.ipdbStore != nil {
-						go a.maybeWriteBack(ipText, ipinfoResp, ipdb.Match{IP: ipText})
-					}
+					// 在线回写已停用（issue 2026-06-20-ipdb-writeback-breaks-lpm）：
+					// 历史上这里把 ipinfo 结果异步回写 base keyspace，/32、/128 会
+					// 破坏 base "网段不重叠" 不变量。正式修复由 roadmap ipdb-v2-lpm 承接。
 				}
 			}
 

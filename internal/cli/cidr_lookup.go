@@ -178,6 +178,10 @@ func (a *App) runCIDRLookup(args []string) {
 		os.Exit(1)
 	}
 
+	// 查询成功后、输出结果前打印离线库告警（如 v1 库重建提示）。
+	// 走 stderr，不污染 stdout 的 JSON / 文本协议。
+	a.printIPDBWarning()
+
 	if a.outputMode == render.OutputJSON {
 		render.WriteJSON(os.Stdout, result)
 		return

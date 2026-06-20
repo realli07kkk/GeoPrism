@@ -116,12 +116,12 @@ func (a *App) LookupIP(ip string) (IPLookupView, error) {
 	// Step 3: 合并
 	merged, source := a.mergeIPInfo(ip, ipdbMatch, ipinfoResp)
 
-	// Step 4: 回写
-	if ipinfoResp != nil && a.ipdbStore != nil {
-		a.maybeWriteBack(ip, ipinfoResp, ipdbMatch)
-	}
+	// 注：在线回写已停用（issue 2026-06-20-ipdb-writeback-breaks-lpm）。
+	// 历史上这里会把 ipinfo 结果异步回写进 base keyspace，导致 /32、/128
+	// 破坏 base 的"网段不重叠"不变量，产生假 MISS 和同 key 覆盖。
+	// 正式修复（overlay 物理隔离）由 roadmap ipdb-v2-lpm 承接。
 
-	// Step 5: 构建视图
+	// Step 4: 构建视图
 	view := newIPLookupView(merged)
 	view.Source = source
 	return view, nil
@@ -160,6 +160,10 @@ func (a *App) runIPLookup(args []string) {
 		a.writeError(err.Error())
 		os.Exit(1)
 	}
+
+	// 查询成功后、输出结果前打印离线库告警（如 v1 库重建提示）。
+	// 走 stderr，不污染 stdout 的 JSON / 文本协议。
+	a.printIPDBWarning()
 
 	if a.outputMode == render.OutputJSON {
 		render.WriteJSON(os.Stdout, result)

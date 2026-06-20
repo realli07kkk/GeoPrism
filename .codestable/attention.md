@@ -19,3 +19,5 @@
 ### 环境变量与凭证
 
 ### 其他
+
+- ipdb 的 base keyspace 不允许运行期写入；任何在线回写必须走独立 overlay（A′ 落地前已全部禁用，见 issue 2026-06-20-ipdb-writeback-breaks-lpm）

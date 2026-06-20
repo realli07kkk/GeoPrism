@@ -337,6 +337,101 @@ func TestCLIIPLookupFlagErrorJSON(t *testing.T) {
 	}
 }
 
+// TestCLIV1RebuildHint 验证 v1 库重建提示在 IP / CIDR 快捷路径的用户可见 stderr 上输出，
+// 且 stdout 的 JSON / 文本协议不被污染（issue 2026-06-20-ipdb-writeback-breaks-lpm 迁移策略）。
+func TestCLIV1RebuildHint(t *testing.T) {
+	const wantHint = "检测到旧版离线库格式"
+
+	t.Run("IP 文本", func(t *testing.T) {
+		home := t.TempDir()
+		buildCLIIPDB(t, home)
+
+		stdout, stderr, exitCode := runCLIWithHome(home, "1.0.0.1")
+		if exitCode != 0 {
+			t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
+		}
+		if !strings.Contains(stderr, wantHint) {
+			t.Fatalf("stderr should contain v1 rebuild hint, got: %s", stderr)
+		}
+		if !strings.Contains(stderr, "ipdb build") {
+			t.Fatalf("stderr should mention ipdb build, got: %s", stderr)
+		}
+		// stdout 文本协议不应被 warning 污染
+		if strings.Contains(stdout, wantHint) {
+			t.Fatalf("stdout should not contain warning, got: %s", stdout)
+		}
+		if !strings.Contains(stdout, "IP 查询结果") {
+			t.Fatalf("stdout should still contain result, got: %s", stdout)
+		}
+	})
+
+	t.Run("IP -j", func(t *testing.T) {
+		home := t.TempDir()
+		buildCLIIPDB(t, home)
+
+		stdout, stderr, exitCode := runCLIWithHome(home, "-j", "1.0.0.1")
+		if exitCode != 0 {
+			t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
+		}
+		if !strings.Contains(stderr, wantHint) {
+			t.Fatalf("stderr should contain v1 rebuild hint, got: %s", stderr)
+		}
+		// stdout 仍是合法 JSON，不含 warning
+		if strings.Contains(stdout, wantHint) {
+			t.Fatalf("stdout JSON should not contain warning, got: %s", stdout)
+		}
+		var result map[string]interface{}
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("stdout should be valid JSON: %v, got: %s", err, stdout)
+		}
+		if result["ip"] != "1.0.0.1" {
+			t.Fatalf("ip = %v, want 1.0.0.1", result["ip"])
+		}
+	})
+
+	t.Run("CIDR 文本", func(t *testing.T) {
+		home := t.TempDir()
+		buildCLIIPDB(t, home)
+
+		stdout, stderr, exitCode := runCLIWithHome(home, "1.0.0.0/24")
+		if exitCode != 0 {
+			t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
+		}
+		if !strings.Contains(stderr, wantHint) {
+			t.Fatalf("stderr should contain v1 rebuild hint, got: %s", stderr)
+		}
+		if strings.Contains(stdout, wantHint) {
+			t.Fatalf("stdout should not contain warning, got: %s", stdout)
+		}
+		if !strings.Contains(stdout, "CIDR 查询结果") {
+			t.Fatalf("stdout should still contain result, got: %s", stdout)
+		}
+	})
+
+	t.Run("CIDR -j", func(t *testing.T) {
+		home := t.TempDir()
+		buildCLIIPDB(t, home)
+
+		stdout, stderr, exitCode := runCLIWithHome(home, "-j", "1.0.0.0/24")
+		if exitCode != 0 {
+			t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
+		}
+		if !strings.Contains(stderr, wantHint) {
+			t.Fatalf("stderr should contain v1 rebuild hint, got: %s", stderr)
+		}
+		if strings.Contains(stdout, wantHint) {
+			t.Fatalf("stdout JSON should not contain warning, got: %s", stdout)
+		}
+		var result map[string]interface{}
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("stdout should be valid JSON: %v, got: %s", err, stdout)
+		}
+		if result["query_cidr"] != "1.0.0.0/24" {
+			t.Fatalf("query_cidr = %v, want 1.0.0.0/24", result["query_cidr"])
+		}
+	})
+}
+
 // TestCLITestJSON 测试 test --all -j 输出 JSON
 func TestCLITestJSON(t *testing.T) {
 	tests := []struct {
