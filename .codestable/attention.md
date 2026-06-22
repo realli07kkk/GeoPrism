@@ -16,6 +16,9 @@
 
 ### 命令与脚本陷阱
 
+- `netip.PrefixFrom(addr, N)` 对越界 N（IPv4 >32 / IPv6 >128）不 panic，返回 `Bits()==-1` 的 invalid Prefix；写 codec/builder/store 必须主动判 `IsValid()` 和 `p.Addr()==p.Masked().Addr()`（来源：ipdb-v2-schema CR-001）
+- `netip.Addr.Is6()` 包含 IPv4-mapped IPv6（`::ffff:x.x.x.x`，`Is4In6()==true`）；做 family 分发时若需排除此类地址，必须显式判 `Is4In6()`（来源：ipdb-v2-schema CR-004，详见 decision ipdb-codec-reject-ipv4-mapped-ipv6）
+
 ### 路径与目录约定
 
 ### 环境变量与凭证

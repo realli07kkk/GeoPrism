@@ -1,0 +1,134 @@
+feature: 2026-06-22-ipdb-v2-schema
+created: 2026-06-22
+
+steps:
+  - action: "类型层：在 types.go 新增 kind 字节常量（keyKindPrimaryV4/V6=0x14/0x16、keyKindCIDRV4/V6=0x24/0x26、keyKindOverlayV4/V6=0x34/0x36）+ SchemaFeatures 类型 + capability 常量（PrimaryLPM/CIDRStartIdx/预留 CIDRInlineValue）+ Metadata.SchemaFeatures 字段（json schema_features,omitempty）+ OverlayMeta 类型"
+    exit_signal: "go build ./... 通过；go test ./backend/ipdb/... 全绿（v1 回归保护）；grep 确认 currentFormatVersion 仍为 1"
+    status: done
+
+  - action: "key 编解码：在 codec.go 新增 6 个 V2 key 函数（encode/decodePrimaryKeyV2、encode/decodeCIDRKeyV2、encode/decodeOverlayKeyV2）；v1 全部 6 个 codec 函数签名零 diff"
+    exit_signal: "单测（建议落 codec_v2_test.go）覆盖 round-trip（V4/V6、/0 与 /32 与 /128 边界）+ primary↔cidr 互相还原不变量 + 异常（未 Masked / prefixLen 越界识别 Bits()==-1 / key 长度非法 / kind 字节未知）"
+    status: done
+
+  - action: "value 编解码：在 codec.go 新增 4 个 value 函数（encode/decodeBaseRecordValueV2 ver=2、encode/decodeOverlayRecordValueV1 ver=1）"
+    exit_signal: "单测覆盖 round-trip（全字段/全空字段/Network 返回空）+ overlay OverlayMeta round-trip（含 expiresAtUnix==0 永不过期、FetchedAt 精确）+ 异常矩阵（version 不符 / flags 非零 / 截断 uvarint / 多余尾部字节）"
+    status: done
+
+  - action: "测试覆盖收口：补齐 roadmap §7 schema 异常输入矩阵 + schema_features JSON tag 行为单测 + capability 位运算单测"
+    exit_signal: "第 3 节全部 24 条验收场景均有可观察证据"
+    status: done
+
+checks:
+  # 名词契约（来源：第 2.1 节接口签名）
+  - item: "encodePrimaryKeyV2/decodePrimaryKeyV2 签名与 key 布局 [kind][prefixLen][maskedAddr] 一致"
+    source: 名词契约
+    status: passed
+  - item: "encodeCIDRKeyV2/decodeCIDRKeyV2 签名与 key 布局 [kind][maskedAddr][prefixLen] 一致（value 零长度由 Store 层处理，codec 只产 key）"
+    source: 名词契约
+    status: passed
+  - item: "encodeOverlayKeyV2/decodeOverlayKeyV2 签名与 key 布局 [kind][addr] 一致"
+    source: 名词契约
+    status: passed
+  - item: "encodeBaseRecordValueV2/decodeBaseRecordValueV2 签名：decode 不带 startAddr 参数（与 v1 decodeRecordValue 不同），返回 Record.Network 为空"
+    source: 名词契约
+    status: passed
+  - item: "encodeOverlayRecordValueV1/decodeOverlayRecordValueV1 签名：decode 返回 (Record, OverlayMeta, error)"
+    source: 名词契约
+    status: passed
+  - item: "OverlayMeta{Source string; FetchedAt time.Time; ExpiresAt time.Time} 定义在 types.go（与未来 OverlayMetadata 库级元信息区分）"
+    source: 名词契约
+    status: passed
+  - item: "Metadata.SchemaFeatures 字段 JSON tag 为 schema_features,omitempty"
+    source: 名词契约
+    status: passed
+
+  # 编排骨架 / 流程级约束（来源：第 2.2 节主流程 + 流程级约束）
+  - item: "encodePrimaryKeyV2/encodeCIDRKeyV2 入参必须已 Masked()，否则返回 error（codec 不内部 Mask）"
+    source: 流程级约束
+    status: passed
+  - item: "prefixLen 边界：单字节，IPv4 0-32 / IPv6 0-128；PrefixFrom 返回 Bits()==-1 的 invalid Prefix 识别为越界"
+    source: 流程级约束
+    status: passed
+  - item: "key 长度严格校验：primary V4=6B/V6=18B、cidr V4=6B/V6=18B、overlay V4=5B/V6=17B；截断/多余字节返回 error"
+    source: 流程级约束
+    status: passed
+  - item: "decode value 校验 version 字节（base=2/overlay=1）+ flags==0；不符返回明确 error（含义为库内损坏/用错 decoder，不用于识别 v1）"
+    source: 流程级约束
+    status: passed
+  - item: "decode value 消费完所有字节后不得有剩余（多余尾部字节返回 error，防部分写/版本串台）"
+    source: 流程级约束
+    status: passed
+  - item: "primary ↔ cidr 互相还原不变量：同一 prefix 经两套 key 编码再解码还原出同一 netip.Prefix"
+    source: 流程级约束
+    status: passed
+  - item: "Record.Network 不进 value；decode 返回空 Network，回填责任在后续 Store"
+    source: 流程级约束
+    status: passed
+  - item: "expiresAtUnix==0 表示永不过期；编码零值用整型 0，不得用 time.Time{}.Unix()"
+    source: 流程级约束
+    status: passed
+  - item: "本 feature 阶段 v2 codec 无任何调用方（builder/store 不接入，留给后续 feature）"
+    source: 流程级约束
+    status: passed
+
+  # 挂载点（来源：第 2.3 节）
+  - item: "本 feature 不引入新挂入点：v2 codec 尚无调用方，对用户/系统不可见，无挂入点可列"
+    source: 挂载点
+    status: passed
+
+  # 范围守护（来源：第 1 节"明确不做"）
+  - item: "不改 currentFormatVersion（仍为 1，留给 ipdb-v2-query 收口原子切换）"
+    source: 范围守护
+    status: passed
+  - item: "不写任何存储/查询逻辑（builder/store/overlay 一律不动；git diff backend/ipdb/builder.go backend/ipdb/store.go 为空）"
+    source: 范围守护
+    status: passed
+  - item: "不定义 OverlayMetadata 类型（库级 JSON 元信息留给 ipdb-overlay-store）"
+    source: 范围守护
+    status: passed
+  - item: "不实现 TTL 默认值（约定在 integration 层；codec 函数中不应出现 TTL 默认值常量）"
+    source: 范围守护
+    status: passed
+  - item: "不定义/使用 ErrDuplicatePrefix/ErrCorruptIndex/ErrLegacyFormat/ErrIncompleteSchema（使用归后续 feature；本 feature 只定义 capability 位和 codec 函数）"
+    source: 范围守护
+    status: passed
+  - item: "v1 codec 函数签名零 diff：encodePrefixKey/encodeAddrKey/decodeKeyAddr/boundsForAddr/encodeRecordValue/decodeRecordValue 不变"
+    source: 范围守护
+    status: passed
+
+  # 验收场景（来源：第 3 节关键场景清单）
+  - item: "v1 codec 全量单测仍绿（TestEncodePrefixKeyRoundTrip/TestEncodeRecordValueRoundTrip/TestEncodeRecordValueWithEmptyFields）"
+    source: 验收场景
+    status: passed
+  - item: "primary/cidr/overlay key round-trip 覆盖 V4(/0,/8,/16,/24,/32) + V6(/0,/48,/128) 边界"
+    source: 验收场景
+    status: passed
+  - item: "primary ↔ cidr 互相还原同一 prefix（V4/V6 + 多种 prefixLen）"
+    source: 验收场景
+    status: passed
+  - item: "base value round-trip 全字段 + 全空字段；decode 返回 Network 为空"
+    source: 验收场景
+    status: passed
+  - item: "overlay value round-trip 含 OverlayMeta（Source 非空/空）；expiresAtUnix==0 永不过期；FetchedAt 精确"
+    source: 验收场景
+    status: passed
+  - item: "异常输入矩阵：encode 未 Masked / prefixLen 越界 / decode key 长度非法 / kind 未知 / value version 不符(base/overlay) / flags 非零 / uvarint 截断 / 多余尾部"
+    source: 验收场景
+    status: passed
+  - item: "schema_features JSON tag 行为：Metadata{SchemaFeatures:0} marshal 不含字段（v1 行为不变）；旧 JSON 反序列化得 0；非零 marshal 正常输出"
+    source: 验收场景
+    status: passed
+  - item: "capability 位组合 SchemaFeaturePrimaryLPM | SchemaFeatureCIDRStartIdx 可正确表示（位运算）"
+    source: 验收场景
+    status: passed
+
+  # 质量门（来源：attention.md 项目硬约束，第 3 节质量门）
+  - item: "go vet ./... 通过（CR-001 教训：copylocks 漏过主干）"
+    source: 流程级约束
+    status: passed
+  - item: "gofmt -l 输出为空"
+    source: 流程级约束
+    status: passed
+  - item: "git diff --check 无空白错误"
+    source: 流程级约束
+    status: passed

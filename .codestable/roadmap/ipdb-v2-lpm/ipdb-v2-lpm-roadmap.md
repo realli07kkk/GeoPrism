@@ -307,8 +307,8 @@ overlay 独立元数据：OverlayMetadata{ FormatVersion=1, CreatedAt }
 1. **ipdb-v2-schema** — v2 primary/cidr/overlay key codec + base value v2 / overlay value v1 两套独立 codec + `SchemaFeatures` 定义；拍板重复 prefix 与 CIDR 零长度 value；保持 v1 公开行为不变、不改 `currentFormatVersion`
    - 所属模块：模块 A · 编码层
    - 依赖：无
-   - 状态：planned
-   - 对应 feature：未启动
+   - 状态：done
+   - 对应 feature：2026-06-22-ipdb-v2-schema
    - 备注：契约见 §4.1 / §4.2；纯编码 + 单测，无对外行为变化
 
 2. **ipdb-v2-base-build** — 实现**未激活**的 v2 builder（首版即同 batch 双写 primary+cidr）+ v2 `BaseStore` 的 ReadOnly 打开；允许不同 prefix 重叠、相同 prefix 严格拒绝（`ErrDuplicatePrefix`）；staging 构建后 rename；**不切换公开 `BuildFromCSV` / `OpenCurrentBase` / `currentFormatVersion`**
