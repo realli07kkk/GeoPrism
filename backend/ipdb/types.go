@@ -7,9 +7,12 @@ const (
 	keyFamilyIPv4 byte = 0x04
 	keyFamilyIPv6 byte = 0x06
 
-	currentFormatVersion byte = 1
-	// formatVersionV2 是 v2 base 库的库级 FormatVersion。仅 v2 builder 写入；
-	// currentFormatVersion 保持 1 不动，公开入口在 ipdb-v2-query 收口前零变化。
+	// currentFormatVersion 是当前激活库的 FormatVersion。ipdb-v2-query 收口后升到 2，
+	// 公开 BuildFromCSV/OpenCurrent 全切 v2。该常量也被 v1 value codec 用作 value version
+	// 字节（v1 codec 现为死代码，归 ipdb-lookup-integration 清理）。
+	currentFormatVersion byte = 2
+	// formatVersionV2 是 v2 base 库的库级 FormatVersion。与 currentFormatVersion 收口后同值，
+	// 保留独立命名以区分"库级版本"与"value 协议版本"语义。
 	formatVersionV2         byte = 2
 	defaultPebbleModulePath      = "github.com/cockroachdb/pebble/v2"
 	defaultPebbleVersion         = "unknown"

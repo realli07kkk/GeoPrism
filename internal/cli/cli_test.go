@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"geoprism/backend/ipdb"
 	"geoprism/render"
 )
 
@@ -337,97 +338,62 @@ func TestCLIIPLookupFlagErrorJSON(t *testing.T) {
 	}
 }
 
-// TestCLIV1RebuildHint 验证 v1 库重建提示在 IP / CIDR 快捷路径的用户可见 stderr 上输出，
-// 且 stdout 的 JSON / 文本协议不被污染（issue 2026-06-20-ipdb-writeback-breaks-lpm 迁移策略）。
-func TestCLIV1RebuildHint(t *testing.T) {
-	const wantHint = "检测到旧版离线库格式"
+// TestCLIV1RebuildHint 已删除：ipdb-v2-query 收口后 OpenCurrent 打开 v1 库直接返回
+// ErrLegacyFormat（不再软警告 FormatVersion<2），app.go 的 v1 软警告分支已作为死代码删除。
+// v1 硬拒绝逻辑由 backend/ipdb 的 TestOpenCurrentRejectsLegacyFormat 覆盖。
 
-	t.Run("IP 文本", func(t *testing.T) {
+// TestCLIV1DatabaseDegradesGracefully 验证 v1 库下 CLI 端到端降级链路（CR-001 回归保护）：
+// v1 库 → OpenCurrent 返回 ErrLegacyFormat → recordIPDBInitError 把 error 降级为 warning 进 stderr。
+// 纯 IP 快捷查询在无 ipinfo 兜底时本就报错退出（无任何数据源），故 exit=1 是正确行为；
+// 本测试守护的核心契约是：v1 重建语义进 stderr（用户可见），stdout 协议不被 warning 污染。
+func TestCLIV1DatabaseDegradesGracefully(t *testing.T) {
+	t.Run("IP 文本：错误与重建语义进 stderr，stdout 干净", func(t *testing.T) {
 		home := t.TempDir()
 		buildCLIIPDB(t, home)
+		// 把 buildCLIIPDB 产出的 v2 库篡改为 v1 格式（FormatVersion=1）。
+		rootDir := filepath.Join(home, ".geoprism", "ipdb")
+		rewriteIPDBMetadata(t, rootDir, "test-build", ipdb.Metadata{
+			FormatVersion: 1, RowCount: 2, IPv4Count: 1, IPv6Count: 1, SchemaFeatures: 0,
+		})
 
-		stdout, stderr, exitCode := runCLIWithHome(home, "1.0.0.1")
-		if exitCode != 0 {
-			t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
+		stdout, stderr, _ := runCLIWithHome(home, "1.0.0.1")
+		// 纯 IP 查询无 ipdb + 无 ipinfo → exit 1（正确，无数据源）。
+		// 核心断言：stderr 含 v1 重建语义（recordIPDBInitError default 分支含 ErrLegacyFormat 文本）。
+		if !strings.Contains(stderr, "加载离线 IP 库失败") {
+			t.Fatalf("stderr 应含降级 warning, got: %s", stderr)
 		}
-		if !strings.Contains(stderr, wantHint) {
-			t.Fatalf("stderr should contain v1 rebuild hint, got: %s", stderr)
+		if !strings.Contains(stderr, "旧版格式") {
+			t.Fatalf("stderr 应含 v1 重建语义, got: %s", stderr)
 		}
-		if !strings.Contains(stderr, "ipdb build") {
-			t.Fatalf("stderr should mention ipdb build, got: %s", stderr)
-		}
-		// stdout 文本协议不应被 warning 污染
-		if strings.Contains(stdout, wantHint) {
-			t.Fatalf("stdout should not contain warning, got: %s", stdout)
-		}
-		if !strings.Contains(stdout, "IP 查询结果") {
-			t.Fatalf("stdout should still contain result, got: %s", stdout)
+		// stdout 文本协议不应被 warning 污染。
+		if strings.Contains(stdout, "加载离线 IP 库失败") {
+			t.Fatalf("stdout 不应含 warning, got: %s", stdout)
 		}
 	})
 
-	t.Run("IP -j", func(t *testing.T) {
+	t.Run("IP -j：错误进 stderr JSON，stdout 空", func(t *testing.T) {
 		home := t.TempDir()
 		buildCLIIPDB(t, home)
+		rootDir := filepath.Join(home, ".geoprism", "ipdb")
+		rewriteIPDBMetadata(t, rootDir, "test-build", ipdb.Metadata{
+			FormatVersion: 1, RowCount: 2, IPv4Count: 1, IPv6Count: 1, SchemaFeatures: 0,
+		})
 
-		stdout, stderr, exitCode := runCLIWithHome(home, "-j", "1.0.0.1")
-		if exitCode != 0 {
-			t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
+		stdout, stderr, _ := runCLIWithHome(home, "-j", "1.0.0.1")
+		// stderr 是 JSON error 格式（含 v1 重建语义）。
+		if !strings.Contains(stderr, "旧版格式") {
+			t.Fatalf("stderr 应含 v1 重建语义, got: %s", stderr)
 		}
-		if !strings.Contains(stderr, wantHint) {
-			t.Fatalf("stderr should contain v1 rebuild hint, got: %s", stderr)
+		var errResult map[string]interface{}
+		if err := json.Unmarshal([]byte(stderr), &errResult); err != nil {
+			t.Fatalf("stderr 应为合法 JSON error: %v, got: %s", err, stderr)
 		}
-		// stdout 仍是合法 JSON，不含 warning
-		if strings.Contains(stdout, wantHint) {
-			t.Fatalf("stdout JSON should not contain warning, got: %s", stdout)
+		if errResult["error"] == nil {
+			t.Fatalf("stderr JSON 应含 error 字段, got: %s", stderr)
 		}
-		var result map[string]interface{}
-		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
-			t.Fatalf("stdout should be valid JSON: %v, got: %s", err, stdout)
-		}
-		if result["ip"] != "1.0.0.1" {
-			t.Fatalf("ip = %v, want 1.0.0.1", result["ip"])
-		}
-	})
-
-	t.Run("CIDR 文本", func(t *testing.T) {
-		home := t.TempDir()
-		buildCLIIPDB(t, home)
-
-		stdout, stderr, exitCode := runCLIWithHome(home, "1.0.0.0/24")
-		if exitCode != 0 {
-			t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
-		}
-		if !strings.Contains(stderr, wantHint) {
-			t.Fatalf("stderr should contain v1 rebuild hint, got: %s", stderr)
-		}
-		if strings.Contains(stdout, wantHint) {
-			t.Fatalf("stdout should not contain warning, got: %s", stdout)
-		}
-		if !strings.Contains(stdout, "CIDR 查询结果") {
-			t.Fatalf("stdout should still contain result, got: %s", stdout)
-		}
-	})
-
-	t.Run("CIDR -j", func(t *testing.T) {
-		home := t.TempDir()
-		buildCLIIPDB(t, home)
-
-		stdout, stderr, exitCode := runCLIWithHome(home, "-j", "1.0.0.0/24")
-		if exitCode != 0 {
-			t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr)
-		}
-		if !strings.Contains(stderr, wantHint) {
-			t.Fatalf("stderr should contain v1 rebuild hint, got: %s", stderr)
-		}
-		if strings.Contains(stdout, wantHint) {
-			t.Fatalf("stdout JSON should not contain warning, got: %s", stdout)
-		}
-		var result map[string]interface{}
-		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
-			t.Fatalf("stdout should be valid JSON: %v, got: %s", err, stdout)
-		}
-		if result["query_cidr"] != "1.0.0.0/24" {
-			t.Fatalf("query_cidr = %v, want 1.0.0.0/24", result["query_cidr"])
+		// stdout 应为空（错误全部进 stderr）。
+		if stdout != "" {
+			t.Fatalf("stdout 应为空，got: %s", stdout)
 		}
 	})
 }

@@ -54,29 +54,10 @@ func TestBuildFromCSVAndLookupIP(t *testing.T) {
 	assertLookup(t, store, "2001:db8:2::1", false, "")
 }
 
-func TestBuildFromCSVRejectsOverlappingCIDR(t *testing.T) {
-	rootDir := t.TempDir()
-	csvPath := writeCSVFixture(t, t.TempDir(), strings.Join([]string{
-		strings.Join(expectedCSVHeader, ","),
-		`1.0.0.0/24,Australia,AU,Oceania,OC,AS13335,"Cloudflare, Inc.",cloudflare.com`,
-		`1.0.0.128/25,Australia,AU,Oceania,OC,AS13335,"Cloudflare, Inc.",cloudflare.com`,
-	}, "\n"))
-
-	_, err := BuildFromCSV(rootDir, BuildOptions{
-		CSVPath: csvPath,
-		BuildID: "bad-build",
-	})
-	if err == nil {
-		t.Fatal("BuildFromCSV() error = nil, want overlap error")
-	}
-	if !strings.Contains(err.Error(), "重叠网段") {
-		t.Fatalf("error = %v, want overlap message", err)
-	}
-
-	if _, statErr := os.Stat(filepath.Join(rootDir, currentFileName)); !os.IsNotExist(statErr) {
-		t.Fatalf("CURRENT should not exist, statErr = %v", statErr)
-	}
-}
+// TestBuildFromCSVRejectsOverlappingCIDR 已删除：ipdb-v2-query 收口后 BuildFromCSV
+// 委托 v2 builder，v2 允许不同 prefix 重叠（仅拒绝相同 prefix）。v1 的 overlap reject
+// 行为不再适用。"v2 允许重叠"由 base-build 的 TestBuildV2AllowsDistinctOverlap 覆盖，
+// "相同 prefix reject"由 TestBuildV2RejectsDuplicatePrefix 覆盖。
 
 func TestBuildFromCSVRequiresAbsolutePath(t *testing.T) {
 	_, err := BuildFromCSV(t.TempDir(), BuildOptions{

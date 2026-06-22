@@ -21,10 +21,10 @@ items:
   - slug: ipdb-v2-query
     description: BaseStore.LookupIP 真 LPM ladder + LookupCIDR 三段（ancestors+self+descendants）查询 + property test；收口处原子切换公开 builder/open/query 与 currentFormatVersion=2
     depends_on: [ipdb-v2-base-build]
-    status: planned
-    feature: null
+    status: done
+    feature: 2026-06-22-ipdb-v2-query
     minimal_loop: true
-    notes: 最小闭环；v1 返回 ErrLegacyFormat、缺 capability 返回 ErrIncompleteSchema
+    notes: 最小闭环已落地（2026-06-22 accept）；v1 返回 ErrLegacyFormat、缺 capability 返回 ErrIncompleteSchema；OpenCurrentBase 公开 API 推迟到 integration，query 收口用 Store 过渡壳转调（见 roadmap §9 2026-06-22 实施顺序调整）；property test 400 轮 + benchmark IPv4 7.4μs/IPv6 64μs
 
   - slug: ipdb-overlay-store
     description: 新增独立 overlay 存储（独立 OverlayMetadata/version + TTL + 机会性删除 + corruption/lock 降级）+ 回写改同步写入 overlay（PutOverlay）

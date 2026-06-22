@@ -157,6 +157,12 @@ Overlay value v1（独立协议，不复用 base flag）：
 **形式**：Go 方法签名
 
 ```
+# 实施顺序调整（2026-06-22，ipdb-v2-query design 拍板）：
+# OpenCurrentBase 这个公开 API 的实际落地推迟到 ipdb-lookup-integration
+# （届时 App 改持 *BaseStore/*OverlayStore、拆 Store）。ipdb-v2-query 收口时
+# 用 Store 过渡壳：OpenCurrent 内部转调 v2 BaseStore 真查询、capability/v1
+# 拒绝逻辑落在 OpenCurrent（不是新公开 API）。下面的 OpenCurrentBase 签名
+# 描述的是"收口后系统能力"，integration 阶段按需拆出公开 API。
 func OpenCurrentBase(rootDir string) (*BaseStore, error)
   # ReadOnly 打开当前 CURRENT 指向的 base；只接受完整 v2：
   #   Metadata.FormatVersion != 2          → ErrLegacyFormat
@@ -321,9 +327,9 @@ overlay 独立元数据：OverlayMetadata{ FormatVersion=1, CreatedAt }
 3. **ipdb-v2-query** — `BaseStore.LookupIP` 真 LPM ladder + `LookupCIDR` 三段（ancestors+self+descendants）查询 + property test；**收口处原子切换公开 builder/open/query 到 v2、`currentFormatVersion=2`**；v1 → `ErrLegacyFormat`、缺 capability → `ErrIncompleteSchema`
    - 所属模块：模块 B · base 存储
    - 依赖：ipdb-v2-base-build
-   - 状态：planned
-   - 对应 feature：未启动
-   - 备注：**最小闭环**
+   - 状态：done
+   - 对应 feature：2026-06-22-ipdb-v2-query
+   - 备注：**最小闭环**已落地；`OpenCurrentBase` 公开 API 推迟到 integration（query 收口用 `Store` 过渡壳转调，见 §9）；property test 400 轮全绿、benchmark IPv4 7.4μs / IPv6 64μs
 
 4. **ipdb-overlay-store** — 新增独立 overlay 存储（独立 `OverlayMetadata`/version + TTL + 机会性删除 + corruption/lock 降级）+ 回写改同步写入 overlay（`PutOverlay`），base 重建不触碰 overlay
    - 所属模块：模块 C · overlay 存储
@@ -339,7 +345,7 @@ overlay 独立元数据：OverlayMetadata{ FormatVersion=1, CreatedAt }
    - 对应 feature：未启动
    - 备注：保持现有 fetch orchestration，不顺带统一在线查询语义
 
-**最小闭环**：第 3 条 `ipdb-v2-query` 收口时同时把公开 `BuildFromCSV` → v2 builder、`OpenCurrentBase` → 只接受完整 v2、`LookupIP/LookupCIDR` → v2 查询、`currentFormatVersion` → 2 原子切换。届时可 `ipdb build` 出 v2 库，并演示"对一个被大网段覆盖、同时存在更具体重叠记录的 IP，单 IP 查询返回正确最长前缀"以及"CIDR 查询返回全部相交网段（含多层祖先）"——本 roadmap 的核心正确性目标，端到端可验证。
+**最小闭环**：第 3 条 `ipdb-v2-query` 收口时同时把公开 `BuildFromCSV` → v2 builder、`OpenCurrent` → 内部转调 v2 BaseStore 真查询（`OpenCurrentBase` 公开 API 推迟到 integration，收口用 `Store` 过渡壳）、`LookupIP/LookupCIDR` → v2 查询、`currentFormatVersion` → 2 原子切换。届时可 `ipdb build` 出 v2 库，并演示"对一个被大网段覆盖、同时存在更具体重叠记录的 IP，单 IP 查询返回正确最长前缀"以及"CIDR 查询返回全部相交网段（含多层祖先）"——本 roadmap 的核心正确性目标，端到端可验证。
 
 ## 6. 排期思路
 
@@ -400,3 +406,13 @@ property test 覆盖项（写进 `ipdb-v2-query` checklist）：随机 prefix �
   **决策拍板**：重复 prefix = `reject duplicate`（删除 builder 重叠 reject、改为允许不同 prefix 重叠 + 相同 prefix 拒绝）；CIDR 索引 = 零长度 value；不新增第六个 feature，改为 §7 Roadmap 级验收门槛表。
 
   **受影响的已启动 feature**：无（全部 planned）。
+
+- **2026-06-22（实施顺序调整，ipdb-v2-query design 阶段拍板）**：
+
+  **接口契约变化**：
+  - §4.3 `OpenCurrentBase` 公开 API 的实际落地从 `ipdb-v2-query` **推迟到 `ipdb-lookup-integration`**。`ipdb-v2-query` 收口时用 `Store` 过渡壳：`OpenCurrent` 内部转调 v2 BaseStore 真查询（真 LPM + 三段 CIDR），capability/v1 拒绝（`ErrLegacyFormat`/`ErrIncompleteSchema`）落在 `OpenCurrent` 而非新公开 API。`OpenCurrentBase` 签名保留为"收口后系统能力"描述，integration 阶段拆 `Store`、`App` 改持 `*BaseStore`/`*OverlayStore` 时按需落地。
+  - §4.5 `App` 双字段改造同步推迟到 integration。query 收口阶段 cli 5 个 `*ipdb.Store` 调用点签名零 diff。
+
+  **理由**：让 query 收口聚焦"真 LPM + 正确 CIDR + v1 拒绝"核心正确性，不提前做 integration 的 App 接线 + 删 `WriteRecord` + 引入 overlay 字段（依赖未就绪）。过渡壳代价是 `Store` 暂时包一层 delegation，integration 时清除。
+
+  **受影响的已启动 feature**：`ipdb-v2-query`（design 阶段，本次调整的发起方）。

@@ -123,19 +123,23 @@ func TestIssueWritebackDisabled_NoBaseMutation(t *testing.T) {
 		}
 	})
 
-	t.Run("v1 库提示重建", func(t *testing.T) {
+	t.Run("收口后 v2 库正常打开（v1 硬拒绝见 backend TestOpenCurrentRejectsLegacyFormat）", func(t *testing.T) {
+		// ipdb-v2-query 收口后 OpenCurrent 打开 v1 库直接返回 ErrLegacyFormat（不再软警告）。
+		// buildTestIPDB 经公开 BuildFromCSV 现产 v2 库，无法直接造 v1 库；
+		// v1 硬拒绝逻辑由 backend/ipdb 的 TestOpenCurrentRejectsLegacyFormat 覆盖。
+		// 本子测试改为验证：v2 库下 ensureIPDBStore 正常打开、无 v1 warning。
 		rootDir := t.TempDir()
 		buildTestIPDB(t, rootDir)
 
 		app := &App{ipdbRootDir: rootDir}
 		defer app.Close()
 
-		app.ensureIPDBStore()
-		if !strings.Contains(app.ipdbWarning, "旧版离线库格式") {
-			t.Fatalf("ipdbWarning = %q, want v1 rebuild hint", app.ipdbWarning)
+		store := app.ensureIPDBStore()
+		if store == nil {
+			t.Fatal("ensureIPDBStore() = nil, want non-nil v2 store")
 		}
-		if !strings.Contains(app.ipdbWarning, "ipdb build") {
-			t.Fatalf("ipdbWarning = %q, want ipdb build hint", app.ipdbWarning)
+		if strings.Contains(app.ipdbWarning, "旧版离线库格式") {
+			t.Fatalf("v2 库不应触发 v1 warning, ipdbWarning = %q", app.ipdbWarning)
 		}
 	})
 }
