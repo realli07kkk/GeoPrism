@@ -3,7 +3,7 @@ doc_type: roadmap
 slug: ipdb-v2-lpm
 status: active
 created: 2026-06-20
-last_reviewed: 2026-06-20
+last_reviewed: 2026-06-22
 tags: [ipdb, lpm, pebble, storage, cidr, overlay]
 related_requirements: [offline-ip-lookup]
 related_architecture: [ip-lookup]
@@ -15,72 +15,77 @@ related_architecture: [ip-lookup]
 
 当前离线库（format version 1）的 Pebble key 只编码网段的 masked 起始地址，prefix length 存在 value 里；单 IP 查询靠"SeekGE 后回看一条前驱再判 Contains"近似最长前缀匹配（LPM）。这套近似算法成立的唯一前提是 **基础库网段互不重叠且有序**——`BuildFromCSV` 在导入阶段强制了这一点（`backend/ipdb/builder.go:162-167`）。
 
-但 ipinfo 在线回写会把单 IP 的 /32（IPv6 /128）写进同一个 keyspace（`internal/cli/ip_merge.go:82` → `backend/ipdb/store.go:85`），打破了"不重叠"前提，导致：
+但 ipinfo 在线回写会把单 IP 的 /32（IPv6 /128）写进同一个 keyspace（`internal/cli/ip_merge.go` → `backend/ipdb/store.go:85`），打破了"不重叠"前提，导致：
 
 - 被大网段覆盖的 IP，因为最近前驱变成不包含它的 /32 而返回 MISS；
 - 回写 /32 与已有网段起始地址相同时直接覆盖原网段记录（永久，重建前不可逆）。
 
-该正确性问题已由 issue `2026-06-20-ipdb-writeback-breaks-lpm` 记录并止血。本 roadmap 做根治：把存储格式升级到 v2，用真正的 prefix-key 结构实现 LPM，并把"不可变基础库"与"运行期在线缓存"物理分离。这是 M3"更新功能"（增量 / 远程刷新库）的前置条件——M3 需要一个能安全承载多来源、可重叠记录的存储层。
+该正确性问题已由 issue `2026-06-20-ipdb-writeback-breaks-lpm` 记录并止血（运行期回写已全部禁用）。本 roadmap 做根治：把存储格式升级到 v2，用真正的 prefix-key 结构实现 LPM，并把"不可变基础库"与"运行期在线缓存"物理分离。这是 M3"更新功能"（增量 / 远程刷新库）的前置条件——M3 需要一个能安全承载多来源、可重叠记录的存储层。
 
 ## 2. 范围与明确不做
 
 ### 本 roadmap 覆盖
 
-- v2 key/value 编码：primary LPM 索引（按 prefix length 组织）+ CIDR 二级索引（按起始地址组织）+ 去掉 value 里的 prefixLen
-- 单 IP 查询改为真正的 LPM（逐前缀长度精确查找），重叠记录下结果正确
-- CIDR 查询改用二级索引做区间扫描
-- base / overlay 物理分离：base 为 CSV 构建的不可变库，overlay 为 ipinfo 单 IP 缓存（带 source / 抓取时间 / 过期时间元数据）
-- 回写目标从"写进 base keyspace"改为"写进 overlay"
-- format version 升级与 v1 旧库的识别与处理
+- v2 key/value 编码：primary LPM 主索引（按 prefix length 组织）+ CIDR 二级索引（按起始地址组织，**零长度 value**）+ 去掉 value 里的 prefixLen
+- **base value v2 与 overlay value v1 两套物理独立的 value 协议**（不共用 flag，各自独立演进）
+- v1 / v2 codec **并存**：v1 读路径保持不动，v2 codec 显式命名新增；最终切换前不动 `currentFormatVersion`
+- 单 IP 查询改为真正的 LPM（逐前缀长度精确查找 ladder），重叠记录下结果正确
+- CIDR 查询改为 **ancestors（primary 精确 Get）+ self + descendants（cidr 区间扫描）** 三段合并，重叠/嵌套网段下返回全部相交记录
+- base 构建：**相同 prefix 严格拒绝**（`ErrDuplicatePrefix`），**允许不同 prefix 的重叠**（删除现有 overlap reject）；staging 目录原子构建；primary/cidr 同 batch 双写
+- base / overlay 物理分离：base 为 CSV 构建的不可变库、**`ReadOnly` 打开**；overlay 为 ipinfo 单 IP 缓存（独立 metadata / version / TTL）
+- 回写目标从"写进 base keyspace"改为 **同步写进 overlay**（`PutOverlay`，失败仅 warning）
+- format version 升级与 v1 旧库识别（`ErrLegacyFormat`）+ capability 校验（`ErrIncompleteSchema`）
+- **切换原子性**：`ipdb-v2-base-build` 只实现未激活的内部构建/打开能力，直到 `ipdb-v2-query` 收口才原子切换公开 `BuildFromCSV` / `OpenCurrentBase` / 查询路径 / `currentFormatVersion=2`
 
 ### 明确不做
 
-- **在线查询语义统一 + 回写生命周期队列**（审计意见 #2：`ipdb-first` 短路、`--offline` / `--verify-online` / `--no-writeback` flag、`WriteBackQueue` + `App.Close` 等待）——这是独立 feat，消费本 roadmap 暴露的 overlay 接口契约，不在此实现。
-- **M3 更新功能本身**（增量更新、远程下载 / 校验库、版本比对）——本 roadmap 是其前置存储能力，不实现更新逻辑。
-- **`data_source_priority` 策略语义改动**——保持现状（默认 ipdb-first，CIDR 不受控）；只调整底层存储，不改对外优先级行为。
-- **overlay 缓存的可视化 / 清理命令**（`ipdb overlay clear` 之类）——记观察项，留待后续。
+- **在线查询语义统一 + 回写生命周期队列**（审计意见 #2：`ipdb-first` 短路、`--offline` / `--verify-online` / `--no-writeback` flag、`WriteBackQueue` + `App.Close` 等待）——独立 feat，消费本 roadmap 暴露的 overlay 接口契约，不在此实现。本 roadmap 回写采用**同步 `PutOverlay`**。
+- **M3 更新功能本身**（增量更新、远程下载 / 校验库、版本比对）——本 roadmap 是其前置存储能力。
+- **`data_source_priority` 策略语义改动**——保持现状（默认 ipdb-first，CIDR 不受控）；只调整底层存储与候选模型，不改对外优先级行为。
+- **overlay 缓存的可视化 / 清理命令**（`ipdb overlay clear` 之类）与**容量 / LRU 回收**——只做 TTL + 过期机会性删除，不做主动容量回收。记观察项。
+- **多进程共享同一 Pebble 目录的并发支持**——只保证"任一存储组件因 lock 打不开时独立降级、不拖垮其它组件"，不解决多进程共享读写。
 
 ## 3. 模块拆分（概设）
 
 ```
 IPDB v2
-├── 编码层 codec-v2       ：v2 的 key/value 编解码，定义 primary 与 cidr 两套 key 布局
-├── base 存储             ：CSV 构建的不可变库；真 LPM 单 IP 查询 + CIDR 二级索引区间扫描
-├── overlay 存储          ：运行期 ipinfo 单 IP 缓存，带 TTL，物理独立于 base
-└── 查询编排 + 迁移        ：Store 聚合 base+overlay 对外暴露查询/回写入口；v1 旧库识别与处理
+├── 编码层 codec-v2        ：v2 key/value 编解码；base value v2 与 overlay value v1 两套独立协议；v1/v2 并存
+├── base 存储             ：CSV 构建不可变库（同 batch 双写 primary+cidr）；真 LPM 单 IP + CIDR 三段查询；ReadOnly 打开
+├── overlay 存储          ：运行期 ipinfo 单 IP 缓存，独立 metadata/version/TTL，物理独立于 base
+└── 查询编排 + 迁移        ：App 分别持有 base/overlay 并各自降级；cli 三来源候选合并；v1 识别与重建提示
 ```
 
 ### 模块 A · 编码层 codec-v2
-- **职责**：定义 v2 的 key/value 二进制布局并提供编解码函数。primary 索引按 `[kind+family][prefixLen][maskedAddr]` 组织（支撑逐前缀长度精确查找），CIDR 二级索引按 `[kind+family][maskedAddr][prefixLen]` 组织（支撑按起始地址区间扫描）。value 去掉 prefixLen（已进 key），可选携带 overlay 元数据。不负责任何查询 / 存储逻辑。
-- **承载的子 feature**：`ipdb-v2-codec`
-- **触碰的现有代码**：重写 `backend/ipdb/codec.go`、`backend/ipdb/types.go` 常量（新增 kind 字节、`currentFormatVersion=2`）
+- **职责**：定义 v2 的 key/value 二进制布局并提供编解码函数。primary 索引按 `[kind][prefixLen][maskedAddr]`（支撑逐前缀长度精确查找），CIDR 二级索引按 `[kind][maskedAddr][prefixLen]`（支撑按起始地址区间扫描，**value 零长度**），overlay 按 `[kind][addr]`。base value v2 与 overlay value v1 是**两套独立 value 协议**，不共用 flag。**v1 codec 保持不动，v2 codec 以显式命名（…V2）并存**。不负责任何查询 / 存储逻辑。
+- **承载的子 feature**：`ipdb-v2-schema`
+- **触碰的现有代码**：`backend/ipdb/codec.go`（新增 V2 编解码函数，不删 v1）、`backend/ipdb/types.go`（新增 kind 字节、`SchemaFeatures` 常量与字段；**不改 `currentFormatVersion`**）
 
 ### 模块 B · base 存储
-- **职责**：从 CSV 构建 v2 不可变 base 库（同时写 primary 与 cidr 两套索引）；单 IP 查询用 primary 索引做真正的 LPM；CIDR 查询用二级索引做区间扫描。base 在运行期只读，永不被回写改动。
-- **承载的子 feature**：`ipdb-v2-base-lpm`、`ipdb-v2-cidr-index`
-- **触碰的现有代码**：`backend/ipdb/builder.go`（写双索引）、`backend/ipdb/store.go`（`LookupIP` / `LookupCIDR` 改写）
+- **职责**：从 CSV 构建 v2 不可变 base 库（primary 与 cidr 两套索引**同一 batch 原子双写**）；单 IP 查询用 primary 索引做真正的 LPM ladder；CIDR 查询用"祖先精确 Get + 自身/后代区间扫描"三段合并；base 运行期 `ReadOnly` 打开、永不被回写改动；相同 prefix 拒绝、允许不同 prefix 重叠；staging 目录构建后 rename。`ipdb-v2-base-build` 阶段以**内部入口**（`buildV2FromCSV` / `openBaseV2`）实现且不激活；`ipdb-v2-query` 阶段才把公开入口与 `currentFormatVersion` 切到 v2。
+- **承载的子 feature**：`ipdb-v2-base-build`、`ipdb-v2-query`
+- **触碰的现有代码**：`backend/ipdb/builder.go`（双写 / staging / 去除重叠 reject 改为重复 prefix reject / 内部入口）、`backend/ipdb/store.go`（`BaseStore` 结构、`openBaseV2` → `OpenCurrentBase`、`LookupIP` / `LookupCIDR` 改写）
 
 ### 模块 C · overlay 存储
-- **职责**：运行期 ipinfo 单 IP 结果缓存，独立 Pebble keyspace；只存 /32、/128；每条带 source / 抓取时间 / 过期时间；按 IP 精确查找，过期视为未命中。永不被 CSV 构建触碰。
+- **职责**：运行期 ipinfo 单 IP 结果缓存，独立 Pebble keyspace + **独立 `OverlayMetadata`（`overlayFormatVersion`）**；只存 /32、/128；每条带 source / 抓取时间 / 过期时间；TTL 过期视为未命中并机会性删除；corruption / lock 独立降级。永不被 CSV 构建触碰。
 - **承载的子 feature**：`ipdb-overlay-store`
-- **触碰的现有代码**：新增 `backend/ipdb/overlay.go`；`internal/cli/ip_merge.go` 回写改写入 overlay
+- **触碰的现有代码**：新增 `backend/ipdb/overlay.go`；`internal/cli/ip_merge.go` 等回写路径改写入 overlay
 
 ### 模块 D · 查询编排 + 迁移
-- **职责**：`Store` 聚合 base + overlay，对 cli 暴露统一的 base 查询、overlay 查询、overlay 写入入口；打开库时按 `Metadata.FormatVersion` 识别 v1/v2，v1 给出明确重建提示（不做数据级自动迁移，CSV 是数据源真相，重建即正确）。
+- **职责**：`App` 分别懒加载并持有 `BaseStore` / `OverlayStore`（各自独立的 err 字段与降级），不再聚合成单一句柄；cli 用 `IPCandidate` 把 base / overlay / live 三来源交给**纯函数** `selectCandidate` 选择；live 查询成功后**同步** `PutOverlay`（失败仅 warning）；打开 v1 base 返回 `ErrLegacyFormat` 提示重建、缺 capability 返回 `ErrIncompleteSchema`。
 - **承载的子 feature**：`ipdb-lookup-integration`
-- **触碰的现有代码**：`backend/ipdb/store.go`（`OpenCurrent` / `Store` 结构 / `Close`）、`internal/cli/ip_lookup.go`、`internal/cli/ip_match.go`、`internal/cli/app.go`
+- **触碰的现有代码**：`backend/ipdb/store.go`（`OpenCurrentBase` / `OpenOverlay` / 删除 `WriteRecord`）、`internal/cli/app.go`、`internal/cli/ip_lookup.go`、`internal/cli/ip_match.go`、`internal/cli/ip_merge.go`、`internal/cli/cidr_lookup.go`
 
 ## 4. 模块间接口契约 / 共享协议（架构层详设）
 
 > 以下为 feature-design 的硬约束输入。要改先回 `cs-roadmap update`。
 
-### 4.1 v2 key 布局（codec-v2 → base / overlay）
+### 4.1 v2 key 布局 + capability（codec-v2 → base / overlay）
 
 **方向**：编码层 → base 存储、overlay 存储
-**形式**：Pebble key 字节协议 + Go 函数签名
+**形式**：Pebble key 字节协议 + Go 函数签名 + capability 位
 
 ```
-kind 字节（高 4 位区分用途，低保留；与 v1 的 0x04/0x06 不冲突，便于版本识别）：
+kind 字节（与 v1 的 0x04/0x06 不冲突，便于版本/用途识别）：
   meta            = 0x00          # 沿用，value 为 JSON Metadata
   primaryV4       = 0x14
   primaryV6       = 0x16
@@ -90,50 +95,61 @@ kind 字节（高 4 位区分用途，低保留；与 v1 的 0x04/0x06 不冲突
   overlayV6       = 0x36
 
 primary key（LPM 主索引）：[kind][prefixLen:1B][maskedAddr: 4B|16B]
-cidr key（二级索引）   ：[kind][maskedAddr: 4B|16B][prefixLen:1B]
-overlay key            ：[kind][addr: 4B|16B]        # 只有 /32、/128，无需 prefixLen
+cidr key（二级索引）   ：[kind][maskedAddr: 4B|16B][prefixLen:1B]   # value 零长度
+overlay key            ：[kind][addr: 4B|16B]                       # 只有 /32、/128
+
+capability（backend/ipdb/types.go）：
+  type SchemaFeatures uint32
+  const (
+      SchemaFeaturePrimaryLPM    SchemaFeatures = 1 << 0   // 含 primary LPM 主索引
+      SchemaFeatureCIDRStartIdx  SchemaFeatures = 1 << 1   // 含 cidr 起始地址二级索引
+      // 预留：SchemaFeatureCIDRInlineValue（CIDR 索引内联整份 Record，未来若成瓶颈再启用）
+  )
 
 函数签名（backend/ipdb/codec.go）：
-  func encodePrimaryKey(p netip.Prefix) ([]byte, error)
-  func decodePrimaryKey(key []byte) (netip.Prefix, error)
-  func encodeCIDRKey(p netip.Prefix) ([]byte, error)
-  func decodeCIDRKey(key []byte) (netip.Prefix, error)
-  func encodeOverlayKey(a netip.Addr) ([]byte, error)
-  func decodeOverlayKey(key []byte) (netip.Addr, error)
+  func encodePrimaryKeyV2(p netip.Prefix) ([]byte, error)
+  func decodePrimaryKeyV2(key []byte) (netip.Prefix, error)
+  func encodeCIDRKeyV2(p netip.Prefix) ([]byte, error)
+  func decodeCIDRKeyV2(key []byte) (netip.Prefix, error)
+  func encodeOverlayKeyV2(a netip.Addr) ([]byte, error)
+  func decodeOverlayKeyV2(key []byte) (netip.Addr, error)
 ```
 
 **约束**：
-- `encodePrimaryKey` / `encodeCIDRKey` 入参必须已 Masked（调用方保证），否则返回 error。
+- `encodePrimaryKeyV2` / `encodeCIDRKeyV2` 入参必须已 `Masked()`（调用方保证），否则返回 error。
 - prefixLen 单字节，取值 0–32（IPv4）/ 0–128（IPv6），越界返回 error。
 - primary 与 cidr 两套 key 对同一网段必须可互相还原出同一个 `netip.Prefix`。
+- **CIDR 二级索引 value 为零长度**：逻辑记录的 canonical value 只存在于 primary；CIDR 查询解出 prefix 后回查 primary 取 value（见 §4.3）。
+- 完整 v2 base 库的 `Metadata.SchemaFeatures` 必须含 `SchemaFeaturePrimaryLPM | SchemaFeatureCIDRStartIdx`，否则视为不完整 schema。
 
-### 4.2 v2 value 布局（codec-v2 ↔ base / overlay）
+### 4.2 v2 value 布局（codec-v2 ↔ base / overlay，两套独立协议）
 
 **方向**：编码层 ↔ base / overlay 存储
 **形式**：value 字节协议 + 函数签名
 
 ```
-value = [version:1B=2][flags:1B] + 7×(uvarint 长度前缀 + UTF-8 字段)
-        + （flags & flagOverlayMeta 时）overlay 元数据段
+Base value v2：
+  [baseValueVersion:1B=2][flags:1B=0] + 7×(uvarint 长度前缀 + UTF-8 字段)
+  7 字段顺序固定（去掉 prefixLen，已进 key）：
+    Country, CountryCode, Continent, ContinentCode, ASN, ASName, ASDomain
 
-7 字段顺序固定（与 v1 一致，去掉 prefixLen，prefixLen 已进 key）：
-  Country, CountryCode, Continent, ContinentCode, ASN, ASName, ASDomain
-
-flagOverlayMeta = 0x01
-overlay 元数据段 = [sourceLen uvarint][source bytes]
-                   [fetchedAtUnix: int64 BE][expiresAtUnix: int64 BE]
+Overlay value v1（独立协议，不复用 base flag）：
+  [overlayValueVersion:1B=1][flags:1B=0] + 7×字段（同上顺序）
+  + [sourceLen uvarint][source bytes]
+  + [fetchedAtUnix: int64 BE][expiresAtUnix: int64 BE]
 
 函数签名：
-  func encodeRecordValue(rec Record) ([]byte, error)                       # base 用，flags=0
-  func encodeOverlayValue(rec Record, meta OverlayMeta) ([]byte, error)    # overlay 用，置 flagOverlayMeta
-  func decodeRecordValue(value []byte) (Record, error)                     # 忽略 overlay 段
-  func decodeOverlayValue(value []byte) (Record, OverlayMeta, error)
+  func encodeBaseRecordValueV2(rec Record) ([]byte, error)
+  func decodeBaseRecordValueV2(value []byte) (Record, error)
+  func encodeOverlayRecordValueV1(rec Record, meta OverlayMeta) ([]byte, error)
+  func decodeOverlayRecordValueV1(value []byte) (Record, OverlayMeta, error)
 ```
 
 **约束**：
-- `Record.Network` 由 key 的 prefix 还原后回填，不进 value。
-- decode 遇到 `version != 2` 返回明确错误（供 D 模块识别 v1）。
-- base value 必须 `flags=0`；overlay value 必须置 `flagOverlayMeta`。
+- `Record.Network` 不进 value，由 Store 据 key 的 prefix 还原后回填；**decode 返回的 `Record.Network` 为空**，回填责任在 `BaseStore` / `OverlayStore`。
+- base value 与 overlay value 是**两套独立协议**，不共用 `flagOverlayMeta`，各自独立演进版本。
+- decode 遇到 version 字节不符返回明确错误，其含义是"**库内部损坏 / 用错 decoder**"，**不**用于识别 v1；v1/v2 的**库级**识别只依赖 `Metadata.FormatVersion`（读 JSON metadata）。
+- `expiresAtUnix == 0` 表示**永不过期**；不得用 `time.Time{}.Unix()` 作为零值编码。
 
 ### 4.3 base 存储查询接口（base → 查询编排）
 
@@ -141,21 +157,35 @@ overlay 元数据段 = [sourceLen uvarint][source bytes]
 **形式**：Go 方法签名
 
 ```
+func OpenCurrentBase(rootDir string) (*BaseStore, error)
+  # ReadOnly 打开当前 CURRENT 指向的 base；只接受完整 v2：
+  #   Metadata.FormatVersion != 2          → ErrLegacyFormat
+  #   SchemaFeatures 缺 primary|cidr        → ErrIncompleteSchema
+
 func (s *BaseStore) LookupIP(addr netip.Addr) (rec Record, matched bool, err error)
-  # 真正的 LPM：for L := maxBits(addr); L >= 0; L-- {
-  #     key := encodePrimaryKey(PrefixFrom(addr, L).Masked())
+  # 真正的 LPM ladder：
+  #   for L := maxBits(addr); L >= 0; L-- {
+  #     key := encodePrimaryKeyV2(PrefixFrom(addr, L).Masked())
   #     if v, closer, err := db.Get(key); err == nil { 命中即返回（最长前缀） }
-  # }
+  #   }
   # 全程未命中返回 matched=false
 
 func (s *BaseStore) LookupCIDR(query netip.Prefix) ([]Record, error)
-  # 用 cidr 二级索引按起始地址区间扫描；保留一次向前回看以捕获覆盖查询起点的大网段
+  # 1. ancestors：L 从 0 到 query.Bits()-1，
+  #    primary 精确 Get(encodePrimaryKeyV2(PrefixFrom(query.Addr(), L).Masked()))
+  # 2. self + descendants：cidr 索引扫起始地址 [queryStart, queryEnd]，
+  #    仅保留 prefix.Bits() >= query.Bits()；对每条 cidr key 解出 prefix 后回查 primary 取 value
+  # 3. 去重 + 按 (startAddr, prefixLen) 确定性排序
+  # cidr key 存在但对应 primary key 不存在 → ErrCorruptIndex（不静默跳过）
+
+func (s *BaseStore) Close() error
 ```
 
 **约束**：
-- `LookupIP` 必须返回覆盖该 addr 的**最具体**网段（最长前缀），与是否存在更粗网段无关——这是本 roadmap 的核心正确性目标。
-- base 库只读，这两个方法不得写库。
-- IPv4 ladder 最多 33 次 Get，IPv6 最多 129 次；可接受（单次 CLI 查询）。
+- `LookupIP` 必须返回覆盖该 addr 的**最具体**网段（最长前缀），与是否存在更粗网段无关——本 roadmap 的核心正确性目标。该 ladder 算法**本身已对重叠正确**，无需依赖"不重叠"前提。
+- `LookupCIDR` 必须返回**所有**与 query 相交的网段，含多层祖先（反例：库含 `10.0.0.0/8` + `10.1.0.0/16`，查 `10.1.2.0/24` 必须两条都返回——v1 单次 `Prev()` 会漏 `/8`）。
+- base 库 `ReadOnly`，这两个方法不得写库。
+- IPv4 ladder 最多 33 次 Get、IPv6 最多 129 次；判定为可接受，但**必须由 acceptance benchmark 验证**（见 §7）。
 
 ### 4.4 overlay 存储接口（overlay → 查询编排）
 
@@ -166,107 +196,207 @@ func (s *BaseStore) LookupCIDR(query netip.Prefix) ([]Record, error)
 type OverlayMeta struct {
     Source    string    // 来源标识，如 "ipinfo"
     FetchedAt time.Time // 抓取时间
-    ExpiresAt time.Time // 过期时间；零值表示永不过期
+    ExpiresAt time.Time // 过期时间；零值表示永不过期（磁盘编码为 0）
+}
+
+type OverlayMetadata struct {
+    FormatVersion int       `json:"format_version"` // overlayFormatVersion，初始 = 1
+    CreatedAt     time.Time `json:"created_at"`
 }
 
 func OpenOverlay(rootDir string) (*OverlayStore, error)
 func (o *OverlayStore) Get(addr netip.Addr, now time.Time) (Record, OverlayMeta, bool, error)
-  # 精确查 /32 或 /128；ExpiresAt 非零且 now 晚于 ExpiresAt 视为未命中
+  # 精确查 /32 或 /128
+  # 过期判定：expired := !meta.ExpiresAt.IsZero() && !now.Before(meta.ExpiresAt)
+  #          即 now == ExpiresAt 已过期；命中过期项视为未命中并机会性删除
 func (o *OverlayStore) Put(addr netip.Addr, rec Record, meta OverlayMeta) error
 func (o *OverlayStore) Close() error
 ```
 
 **约束**：
 - overlay 只接受单 IP（隐含 /32 或 /128）；传入其它 prefix 由调用方负责，overlay 不存网段。
-- overlay 物理独立于 base 版本目录，base 重建不触碰 overlay；过期由 TTL 兜底。
+- overlay 物理独立于 base 版本目录，base 重建不触碰 overlay。
 - `Put` 必须幂等（同 IP 覆盖写）。
+- **降级**：`OverlayMetadata` 不兼容且未被锁 → rename 到 quarantine 后重建；lock 失败 → 仅禁用，不得 rename / 删除；单条 record 解码损坏 → 作为 cache miss，可机会性删除。
+- **TTL 默认值不在此层**：`OverlayStore` 只负责保存与判断给定的 `ExpiresAt`；默认 TTL 由 cli 编排层决定（见 §4.5）。
+- 不做容量 / LRU 回收（仅 TTL + 机会性删除）。
 
-### 4.5 Store 聚合与回写入口（查询编排 → cli）
+### 4.5 cli 编排与回写（查询编排 → cli）
 
 **方向**：查询编排 → cli
-**形式**：Go 方法签名
+**形式**：Go 类型 + 方法签名 + 候选选择纯函数
 
 ```
-func OpenCurrent(rootDir string) (*Store, error)   # 内部打开 base(BaseStore) + overlay(OverlayStore)
-func (s *Store) LookupIP(ip string) (Match, error)       # 走 base LPM；Match.Source 不设或置 base
-func (s *Store) LookupOverlay(ip string) (Match, bool, error)  # overlay 命中（未过期）
-func (s *Store) PutOverlay(ip string, rec Record, meta OverlayMeta) error  # 取代旧 WriteRecord
-func (s *Store) LookupCIDR(cidr string) ([]Record, error)
-func (s *Store) Close() error                            # 关 base + overlay
+App 分别持有（不再聚合单一 Store 句柄）：
+  type App struct {
+      // ...
+      ipdbBase       *ipdb.BaseStore
+      ipdbOverlay    *ipdb.OverlayStore
+      ipdbBaseErr    error
+      ipdbOverlayErr error
+  }
+
+三来源候选模型：
+  type CandidateOrigin uint8
+  const (
+      CandidateBase CandidateOrigin = iota   // Source 展示 "ipdb"
+      CandidateOverlay                        // Source 展示 "ipinfo"
+      CandidateLive                           // Source 展示 "ipinfo"
+  )
+  type IPCandidate struct {
+      Origin    CandidateOrigin
+      Match     ipdb.Match
+      Source    string    // 用户展示来源："ipdb" 或 "ipinfo"
+      FetchedAt time.Time // 仅 overlay/live 有意义
+  }
+
+  // 纯函数：只从已取得的候选中按 priority 选择
+  func selectCandidate(priority settings.DataSourcePriority, candidates []IPCandidate) (IPCandidate, bool)
+
+默认 TTL（在 integration 层）：
+  const defaultOverlayTTL = 24 * time.Hour
 ```
 
 **约束**：
-- **删除 / 废弃旧 `WriteRecord`**——任何路径都不得再向 base keyspace 写单 IP。回写一律走 `PutOverlay`。
-- base / overlay 的合并策略（先 overlay 还是先 base、Source 标记）**留在 cli 的 `mergeIPInfo` 层**，本 roadmap 不改其策略语义；Store 只各自暴露查询能力。
-- `OpenCurrent` 读到 `Metadata.FormatVersion == 1` 时返回新错误 `ErrLegacyFormat`，cli 据此提示"离线库为旧格式，请重新执行 `geoprism ipdb build --csv <path>` 生成 v2 库"。不做 v1→v2 数据级自动迁移。
+- `selectCandidate` 是**纯函数**：只负责从"已经取得的候选"中选择，**不**发起 ipinfo HTTP、**不**决定 short-circuit、**不**写 overlay、**不**输出 warning。
+- 同步回写：live 查询成功后由编排代码 `overlay.Put(...)`，失败仅 warning、不影响本次返回；**即使本次因 priority 最终选了 base，只要 live 请求已发生也写 overlay**（保持"缓存在线结果"语义）。
+- **删除 / 废弃旧 `WriteRecord`**——任何路径都不得再向 base keyspace 写单 IP。
+- 默认 TTL 由 integration 设置：`ExpiresAt = now.Add(defaultOverlayTTL)`；建议**注入 clock** 便于 TTL 测试。
+- 组件级降级矩阵：
+
+  | 状态 | 行为 |
+  |---|---|
+  | base v2 正常 + overlay 正常 | 两者都可用 |
+  | base 为 v1 | 忽略 base、提示重建（`ErrLegacyFormat`），overlay / live 仍可用 |
+  | base 缺 capability | 忽略 base、提示重建（`ErrIncompleteSchema`），overlay / live 仍可用 |
+  | base 被另一进程锁定 | base 不可用，overlay / live 继续 |
+  | overlay 被锁定 | 跳过缓存（不读不写），base / live 继续 |
+  | overlay metadata 损坏 | 隔离或禁用 overlay，base / live 继续 |
+  | 无 base | overlay / live 仍可用于单 IP |
+
+- warning 一律走 cli stderr，不污染 JSON / 文本 stdout 协议。
+- 合并仍遵循现有 `data_source_priority` 语义，**不**顺带统一在线查询语义（独立 feat）。
 
 ### 4.6 共享数据结构 / 状态
 
 ```
 磁盘布局 v2（~/.geoprism/ipdb/）：
 ipdb/
-├── CURRENT                       # 内容是当前激活 base 的 buildID（沿用）
-├── versions/{buildID}/db/        # base 库（v2 格式，不可变）
-└── overlay/db/                   # overlay 缓存（独立 Pebble，跨 base 版本存活）
+├── CURRENT                          # 内容是当前激活 base 的 buildID（沿用）
+├── versions/
+│   ├── .staging-{buildID}/db        # 构建中：验证 + 关库后 rename 为正式目录再切 CURRENT
+│   └── {buildID}/db                 # base 库（v2 格式，不可变）
+└── overlay/db                       # overlay 缓存（独立 Pebble，跨 base 版本存活）
 
-Metadata.FormatVersion 从 1 升到 2（backend/ipdb/types.go）。
+base 打开：pebble.Options{ ReadOnly: true, Logger: silentLogger{} }
+
+Metadata（backend/ipdb/types.go）：
+  FormatVersion  从 1 升到 2（仅在 ipdb-v2-query 收口时切）
+  SchemaFeatures uint32（新增，标识 primary / cidr 索引能力）
+
+构建不变量（base-build / query 验收）：
+  primaryCount == cidrCount == Metadata.RowCount   # primary 与 cidr 同一 batch 原子写
+
+overlay 独立元数据：OverlayMetadata{ FormatVersion=1, CreatedAt }
 ```
+
+**锁失败降级总则**：本 roadmap 不解决多进程共享同一 Pebble 目录。任一存储组件因 lock 无法打开时，该组件独立降级为不可用，不影响其它组件——base lock 失败时仍可用 overlay / live，overlay lock 失败时仍可用 base / live。
 
 ## 5. 子 feature 清单
 
-1. **ipdb-v2-codec** — v2 的 key/value 编解码层（primary / cidr / overlay 三套 key + value v2，含 overlay 元数据段），纯编码 + 单测，无对外行为变化
+1. **ipdb-v2-schema** — v2 primary/cidr/overlay key codec + base value v2 / overlay value v1 两套独立 codec + `SchemaFeatures` 定义；拍板重复 prefix 与 CIDR 零长度 value；保持 v1 公开行为不变、不改 `currentFormatVersion`
    - 所属模块：模块 A · 编码层
    - 依赖：无
    - 状态：planned
    - 对应 feature：未启动
-   - 备注：契约见 §4.1 / §4.2；落地后即可被 B/C 复用
+   - 备注：契约见 §4.1 / §4.2；纯编码 + 单测，无对外行为变化
 
-2. **ipdb-v2-base-lpm** — builder 写 v2 primary 索引 + `BaseStore.LookupIP` 改为真正的 LPM ladder + `OpenCurrent` 识别 v1 旧库给重建提示
-   - 所属模块：模块 B · base 存储（含 §4.5 的 v1 识别）
-   - 依赖：ipdb-v2-codec
+2. **ipdb-v2-base-build** — 实现**未激活**的 v2 builder（首版即同 batch 双写 primary+cidr）+ v2 `BaseStore` 的 ReadOnly 打开；允许不同 prefix 重叠、相同 prefix 严格拒绝（`ErrDuplicatePrefix`）；staging 构建后 rename；**不切换公开 `BuildFromCSV` / `OpenCurrentBase` / `currentFormatVersion`**
+   - 所属模块：模块 B · base 存储
+   - 依赖：ipdb-v2-schema
+   - 状态：planned
+   - 对应 feature：未启动
+   - 备注：内部入口 `buildV2FromCSV` / `openBaseV2`；公开入口仍指向 v1，避免"能构建不能查询"的窗口
+
+3. **ipdb-v2-query** — `BaseStore.LookupIP` 真 LPM ladder + `LookupCIDR` 三段（ancestors+self+descendants）查询 + property test；**收口处原子切换公开 builder/open/query 到 v2、`currentFormatVersion=2`**；v1 → `ErrLegacyFormat`、缺 capability → `ErrIncompleteSchema`
+   - 所属模块：模块 B · base 存储
+   - 依赖：ipdb-v2-base-build
    - 状态：planned
    - 对应 feature：未启动
    - 备注：**最小闭环**
 
-3. **ipdb-v2-cidr-index** — builder 增写 cidr 二级索引 + `BaseStore.LookupCIDR` 改用二级索引区间扫描
-   - 所属模块：模块 B · base 存储
-   - 依赖：ipdb-v2-base-lpm
-   - 状态：planned
-   - 对应 feature：未启动
-   - 备注：依赖 base 库已是 v2 双写格式
-
-4. **ipdb-overlay-store** — 新增独立 overlay 存储（TTL + 元数据）+ 回写改写入 overlay（`PutOverlay`），废弃向 base 写单 IP
+4. **ipdb-overlay-store** — 新增独立 overlay 存储（独立 `OverlayMetadata`/version + TTL + 机会性删除 + corruption/lock 降级）+ 回写改同步写入 overlay（`PutOverlay`），base 重建不触碰 overlay
    - 所属模块：模块 C · overlay 存储
-   - 依赖：ipdb-v2-codec
+   - 依赖：ipdb-v2-schema
    - 状态：planned
    - 对应 feature：未启动
-   - 备注：落地后正式取代 issue `2026-06-20-ipdb-writeback-breaks-lpm` 的止血
+   - 备注：与 base 系可并行；落地后联合第 5 条正式取代 issue `2026-06-20-ipdb-writeback-breaks-lpm` 的止血
 
-5. **ipdb-lookup-integration** — `Store` 聚合 base+overlay，cli 各路径切到新接口（LookupIP / LookupOverlay / PutOverlay / Close），移除旧 `WriteRecord` 调用
+5. **ipdb-lookup-integration** — `App` 分别持有 base/overlay 并各自降级；引入 `IPCandidate` 三来源纯函数选择；live 成功后同步 `PutOverlay`（失败仅 warning）；删除 `WriteRecord`；回写 architecture
    - 所属模块：模块 D · 查询编排 + 迁移
-   - 依赖：ipdb-v2-base-lpm, ipdb-overlay-store
+   - 依赖：ipdb-v2-query, ipdb-overlay-store
    - 状态：planned
    - 对应 feature：未启动
-   - 备注：合并策略仍复用现有 `mergeIPInfo`，不改优先级语义
+   - 备注：保持现有 fetch orchestration，不顺带统一在线查询语义
 
-**最小闭环**：第 2 条 `ipdb-v2-base-lpm` 做完后，可以 `ipdb build` 出 v2 库，并演示"对一个被大网段覆盖、同时存在更具体重叠记录的 IP，单 IP 查询返回正确的最长前缀匹配结果"——这正是本 roadmap 要根治的正确性目标，端到端可验证。
+**最小闭环**：第 3 条 `ipdb-v2-query` 收口时同时把公开 `BuildFromCSV` → v2 builder、`OpenCurrentBase` → 只接受完整 v2、`LookupIP/LookupCIDR` → v2 查询、`currentFormatVersion` → 2 原子切换。届时可 `ipdb build` 出 v2 库，并演示"对一个被大网段覆盖、同时存在更具体重叠记录的 IP，单 IP 查询返回正确最长前缀"以及"CIDR 查询返回全部相交网段（含多层祖先）"——本 roadmap 的核心正确性目标，端到端可验证。
 
 ## 6. 排期思路
 
-按"先底座、再正确性、再分离、最后接线"推进：
+按"先底座、再未激活构建、再原子切换正确性、最后接线"推进：
 
-- 先做 `ipdb-v2-codec`：它是纯编码层，无行为变化、可独立单测，是 B/C 的共同地基；不先定死它，后面两条会各自发明 key 布局导致不一致。
-- 第二条 `ipdb-v2-base-lpm` 作最小闭环：它单独就能交付本 roadmap 的核心价值（真 LPM），且不依赖 overlay 即可验证正确性。
-- `ipdb-v2-cidr-index` 紧随其后，因为它要在 base 已是 v2 双写格式之上加二级索引。
-- `ipdb-overlay-store` 只依赖 codec，可与 base 系并行推进。
-- `ipdb-lookup-integration` 收口，依赖 base-lpm 与 overlay 都就绪，把 cli 各路径切到新接口并移除危险的 base 单 IP 写入。
+- 先做 `ipdb-v2-schema`：纯编码层、无行为变化、可独立单测，是 B/C 共同地基；不先定死它，后面会各自发明 key 布局导致不一致。
+- `ipdb-v2-base-build` 做**未激活**的构建/打开能力（内部入口），首版即双写完整双索引——避免"先只写 primary 的半成品 v2"导致 CIDR 不可用。
+- `ipdb-v2-query` 作最小闭环：实现真 LPM + 正确 CIDR，并在**收口处一次性原子切换**公开入口与 `currentFormatVersion`。这一步之前，对用户而言行为与 v1 完全一致。
+- `ipdb-overlay-store` 只依赖 schema，可与 base 系并行推进。
+- `ipdb-lookup-integration` 收口，依赖 query 与 overlay 都就绪。
 
-卡点：format version 升级意味着用户现有 v1 库需重建；本 roadmap 选择"明确报错 + 提示重建"而非数据级迁移，因为 CSV 是数据源真相、重建即正确，迁移代码反而是额外维护负担。需在第 2 条落地前确认这一取舍可接受。
+**卡点**：
+- **切换原子性**：必须保证不出现"能构建 v2 但当前程序不能查询 v2"的中间态——所以 base-build 用内部入口、query 阶段才统一切换。
+- **重复 prefix 策略**：已拍板 `reject duplicate`（见决策记录，建议另走 `cs-decide` 沉淀）。
+- **format 升级即重建**：选择"明确报错 + 提示重建"而非数据级迁移——CSV 是数据源真相、重建即正确，迁移代码反而是额外维护负担；不保留 v1 数据级兼容读路径。
 
-## 7. 观察项
+## 7. Roadmap 级验收门槛
 
-- `architecture/ip-lookup.md` 第 4 节"ipinfo 回写只写 /32/128（进同一库）"与"CIDR 查询要回看前一条记录"的描述将被本 roadmap 改变；落地后由 `cs-feat-accept` 回写 architecture，本 roadmap 不直接改。
-- 与 issue `2026-06-20-ipdb-writeback-breaks-lpm` 的关系：该 issue 是止血（阻止回写破坏 base 查询），`ipdb-overlay-store` 落地后其止血逻辑可被正式方案取代；届时在 issue fix-note 标注。
-- 审计意见 #2（在线查询语义统一 + `WriteBackQueue` 生命周期 + `App.Close` 等待）是独立 feat，依赖本 roadmap §4.4/§4.5 的 overlay 接口；建议本 roadmap 第 4、5 条落地后再启动该 feat。
-- overlay 缓存的清理 / 浏览命令（如 `ipdb overlay clear`、过期项回收策略）暂不做，后续若需要可另开 feature 或 req。
-- v2 format 升级是否需要在 `Metadata` 里保留 v1 兼容读路径（而非直接报错重建）——取决于用户对"升级即重建"的接受度，第 2 条 design 阶段需用户拍板。
+不单设第六个 feature 收容验收事项（避免变成"所有未完成事项的收容箱"、让前面 feature 在缺测试时仍被标完成）。验收责任分配到各 feature，仅"跨 v1/v2 体积与端到端兼容矩阵"留作 roadmap 最终验收：
+
+| 验收内容 | 所属 feature |
+|---|---|
+| v2 codec 异常输入（错 version / unknown flags / 截断 uvarint / 多余尾部字节）、capability 位 | `ipdb-v2-schema` |
+| staging、重复 prefix（`ErrDuplicatePrefix`）、双索引同 batch 原子性、`primaryCount==cidrCount==RowCount`、ReadOnly 写失败 | `ipdb-v2-base-build` |
+| LPM/CIDR property test（暴力 oracle）、性能 benchmark（IPv4/IPv6 冷热缓存 p50/p95，1/10/50 个 IP 批量）、v1 重建提示、缺 capability 拒绝打开 | `ipdb-v2-query` |
+| TTL（`now==ExpiresAt` 过期 / 零值=0 永不过期）、metadata 损坏隔离、lock 失败降级、base 重建后 overlay 持久化、注入 clock | `ipdb-overlay-store` |
+| 三来源候选选择纯函数、同步 `PutOverlay`、组件级降级矩阵、CLI 行为与 architecture 回写 | `ipdb-lookup-integration` |
+| v1/v2 数据库体积、构建时间、端到端兼容矩阵 | roadmap 最终验收 |
+
+property test 覆盖项（写进 `ipdb-v2-query` checklist）：随机 prefix 集 + 暴力 oracle（单 IP 取 `Bits()` 最大的包含 prefix、CIDR 取全部相交）；边界 `/0`、`/32`、`/128`、同起始 `/8`/`/16`/`/24`、多父 prefix 同时覆盖、完全相同 prefix 重复输入（应 reject）。
+
+## 8. 观察项
+
+- `architecture/ip-lookup.md` §2/§4 仍是**止血前的旧描述**（`maybeWriteBack` 异步回写、"CIDR 查询要回看前一条记录"、`WriteRecord`、单索引 `0x04/0x06`），与当前止血后状态已部分脱节；本 roadmap 不改 arch，落地后由 `ipdb-lookup-integration` 的 `cs-feat-accept` 统一回写。
+- 与 issue `2026-06-20-ipdb-writeback-breaks-lpm` 的关系：`ipdb-overlay-store` + `ipdb-lookup-integration` 落地后正式取代第一层止血；届时在该 issue fix-note 追加"已被 A′ 取代"标注。
+- 审计意见 #2（在线查询语义统一 + `WriteBackQueue` 生命周期 + `App.Close` 等待）是独立 feat，依赖本 roadmap §4.4/§4.5 的 overlay 接口；建议第 4、5 条落地后再启动。
+- overlay 缓存的清理 / 浏览命令（如 `ipdb overlay clear`）、容量回收策略暂不做，后续若需要另开 feature 或 req。
+- 重复 prefix `reject duplicate`、CIDR 索引零长度 value 两项已拍板，建议各走一次 `cs-decide` 沉淀为 decision，避免后续维护者重新讨论。
+- `ipdb-v2-lpm-items.yaml` 本次由旧 5 条（`ipdb-v2-codec` / `ipdb-v2-base-lpm` / `ipdb-v2-cidr-index` / `ipdb-overlay-store` / `ipdb-lookup-integration`）重排为新 5 条；旧条目均为 `planned`、无 feature 启动，重排映射见 §9 变更日志（未保留 dropped 墓碑，历史以变更日志 + git 记录）。
+
+## 9. 变更日志
+
+- **2026-06-22**：基于审计意见的重大修订（roadmap 仍处 `active`、无已启动 feature，无受影响的 in-progress/done 条目）。
+
+  **feature 重排（旧 → 新）**：
+  - `ipdb-v2-codec` → `ipdb-v2-schema`（v1/v2 codec 并存、不改版本常量、base/overlay value 拆两套独立协议）
+  - `ipdb-v2-base-lpm` + `ipdb-v2-cidr-index` → 合并为 `ipdb-v2-base-build`（首版即双写完整双索引、未激活）+ `ipdb-v2-query`（真 LPM + 正确 CIDR + 原子切换、最小闭环）
+  - `ipdb-overlay-store`、`ipdb-lookup-integration` slug 保留，契约升级
+
+  **接口契约变化**：
+  - §4.1 新增 `SchemaFeatures` capability；CIDR 二级索引 value 改为**零长度**（canonical value 只在 primary）。
+  - §4.2 base value v2 与 overlay value v1 拆为**两套独立协议**，去掉 `flagOverlayMeta`；decode 返回的 `Record.Network` 为空由 Store 回填；`expiresAtUnix==0` 表示永不过期。
+  - §4.3 `LookupCIDR` 由"单次向前回看"改为 **ancestors（primary 精确 Get）+ self + descendants（cidr 区间扫描）** 三段合并 + `ErrCorruptIndex`；`OpenCurrentBase` ReadOnly 打开、`ErrLegacyFormat` / `ErrIncompleteSchema`。
+  - §4.4 overlay 新增独立 `OverlayMetadata`/version、TTL 边界（`now==ExpiresAt` 过期）、机会性删除、corruption/lock 降级。
+  - §4.5 `OpenCurrent` 拆为 `OpenCurrentBase` / `OpenOverlay`；`App` 分别持有并各自降级；新增 `IPCandidate` 三来源纯函数选择；同步 `PutOverlay`；删除 `WriteRecord`；默认 TTL 在 integration 层。
+  - §4.6 staging 目录原子构建、`primaryCount==cidrCount==RowCount` 不变量、base `ReadOnly` 打开。
+
+  **决策拍板**：重复 prefix = `reject duplicate`（删除 builder 重叠 reject、改为允许不同 prefix 重叠 + 相同 prefix 拒绝）；CIDR 索引 = 零长度 value；不新增第六个 feature，改为 §7 Roadmap 级验收门槛表。
+
+  **受影响的已启动 feature**：无（全部 planned）。

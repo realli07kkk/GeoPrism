@@ -2,42 +2,42 @@ roadmap: ipdb-v2-lpm
 created: 2026-06-20
 
 items:
-  - slug: ipdb-v2-codec
-    description: v2 的 key/value 编解码层（primary/cidr/overlay 三套 key + value v2 含 overlay 元数据段），纯编码加单测，无对外行为变化
+  - slug: ipdb-v2-schema
+    description: v2 primary/cidr/overlay key codec + base value v2 与 overlay value v1 两套独立 codec + SchemaFeatures 定义；保持 v1 公开行为不变、不改 currentFormatVersion
     depends_on: []
     status: planned
     feature: null
     minimal_loop: false
-    notes: 契约见 roadmap §4.1/§4.2，是 base 与 overlay 的共同地基
+    notes: 契约见 roadmap §4.1/§4.2；纯编码加单测，无对外行为变化；拍板重复 prefix reject 与 CIDR 零长度 value
 
-  - slug: ipdb-v2-base-lpm
-    description: builder 写 v2 primary 索引 + BaseStore.LookupIP 改为真正的 LPM ladder + OpenCurrent 识别 v1 旧库给重建提示
-    depends_on: [ipdb-v2-codec]
+  - slug: ipdb-v2-base-build
+    description: 实现未激活的 v2 builder（首版即同 batch 双写 primary+cidr）+ v2 BaseStore 的 ReadOnly 打开；允许不同 prefix 重叠、相同 prefix 严格拒绝；staging 构建后 rename
+    depends_on: [ipdb-v2-schema]
+    status: planned
+    feature: null
+    minimal_loop: false
+    notes: 用内部入口 buildV2FromCSV/openBaseV2，不切换公开 BuildFromCSV/OpenCurrentBase/currentFormatVersion，避免"能构建不能查询"窗口
+
+  - slug: ipdb-v2-query
+    description: BaseStore.LookupIP 真 LPM ladder + LookupCIDR 三段（ancestors+self+descendants）查询 + property test；收口处原子切换公开 builder/open/query 与 currentFormatVersion=2
+    depends_on: [ipdb-v2-base-build]
     status: planned
     feature: null
     minimal_loop: true
-    notes: 单独即可演示重叠记录下单 IP 返回正确最长前缀匹配
-
-  - slug: ipdb-v2-cidr-index
-    description: builder 增写 cidr 二级索引 + BaseStore.LookupCIDR 改用二级索引按起始地址区间扫描
-    depends_on: [ipdb-v2-base-lpm]
-    status: planned
-    feature: null
-    minimal_loop: false
-    notes: 需在 base 已是 v2 双写格式之上
+    notes: 最小闭环；v1 返回 ErrLegacyFormat、缺 capability 返回 ErrIncompleteSchema
 
   - slug: ipdb-overlay-store
-    description: 新增独立 overlay 存储（TTL + 元数据）+ 回写改写入 overlay（PutOverlay），废弃向 base keyspace 写单 IP
-    depends_on: [ipdb-v2-codec]
+    description: 新增独立 overlay 存储（独立 OverlayMetadata/version + TTL + 机会性删除 + corruption/lock 降级）+ 回写改同步写入 overlay（PutOverlay）
+    depends_on: [ipdb-v2-schema]
     status: planned
     feature: null
     minimal_loop: false
-    notes: 落地后正式取代 issue 2026-06-20-ipdb-writeback-breaks-lpm 的止血
+    notes: 与 base 系可并行；落地后联合 ipdb-lookup-integration 正式取代 issue 2026-06-20-ipdb-writeback-breaks-lpm 的止血
 
   - slug: ipdb-lookup-integration
-    description: Store 聚合 base+overlay，cli 各路径切到新接口（LookupIP/LookupOverlay/PutOverlay/Close），移除旧 WriteRecord 调用
-    depends_on: [ipdb-v2-base-lpm, ipdb-overlay-store]
+    description: App 分别持有 base/overlay 并各自降级；引入 IPCandidate 三来源纯函数选择；live 成功后同步 PutOverlay；删除 WriteRecord；回写 architecture
+    depends_on: [ipdb-v2-query, ipdb-overlay-store]
     status: planned
     feature: null
     minimal_loop: false
-    notes: 合并策略仍复用现有 mergeIPInfo，不改优先级语义
+    notes: 保持现有 fetch orchestration 与 data_source_priority 语义，不顺带统一在线查询语义
