@@ -1,0 +1,174 @@
+feature: 2026-06-22-ipdb-v2-query
+created: 2026-06-22
+
+steps:
+  - action: "sentinel 错误 + BaseStore.LookupIP 真 LPM（store_v2.go）：定义 ErrLegacyFormat/ErrIncompleteSchema/ErrCorruptIndex 三个 sentinel；实现 BaseStore.LookupIP(addr netip.Addr) (Record, bool, error)——从 maxBits(addr) 递减到 0，逐前缀长度对 encodePrimaryKeyV2(PrefixFrom(addr, L).Masked()) 做 db.Get point 查，首个命中 decodeBaseRecordValueV2 + 据 primary key 还原 prefix 回填 Record.Network"
+    exit_signal: "单测库含 10.0.0.0/8+10.1.0.0/16+10.1.2.0/24：LookupIP(10.1.2.3) 命中 /24（最长前缀）；LookupIP(10.1.5.5) 命中 /16；LookupIP(20.0.0.1) matched=false；命中结果 Record.Network 非空且回填正确"
+    status: done
+
+  - action: "BaseStore.LookupCIDR 三段查询（store_v2.go）：ancestors 段 L=0..query.Bits()-1，key=encodePrimaryKeyV2(PrefixFrom(query.Addr(), L).Masked())（对 query 起始地址逐 L mask，覆盖所有包含 query.Addr 的超集含起始<query 的情况）；self 段 cidr key 精确 Get；descendants 段 cidr 起始地址区间 [query.Addr(), queryLastAddr] 扫描 + prefixLen>=query.Bits() 过滤；每条 cidr 命中后回查 primary 取 value（cidr value 零长度）；cidr 有 primary 无 → ErrCorruptIndex（不静默跳过）；去重 + 按 encodeCIDRKeyV2 字节序排序（= startAddr 升序 + prefixLen 升序）"
+    exit_signal: "库含 /8+/16+/24，LookupCIDR(10.1.2.0/24) 返回 3 条且排序确定；只含 /8+/16 的库 LookupCIDR(10.1.2.0/24) 返回 2 条（多层祖先，v1 Prev 漏 /8）；库含 1.0.0.0/24 查 1.0.0.128/25 返回 1 条 1.0.0.0/24（ancestors 捕获超集起始<query，防退化成纯 mask 链）；手工损坏库（删 primary 留 cidr）→ ErrCorruptIndex"
+    status: done
+
+  - action: "OpenCurrent 收口 + 过渡壳 Store（store.go）：OpenCurrent 自己读 CURRENT → ReadOnly pebble.Open（probe DB）→ 读 metadataKey 判 FormatVersion：!=2 关 probe DB → ErrLegacyFormat（仅此判定）；==2 关 probe DB → 调 openBaseV2（sanity 必过，二次打开无 lock 冲突）→ 检查 SchemaFeatures 缺 PrimaryLPM|CIDRStartIdx → 关库 ErrIncompleteSchema；metadata 读不到/损坏/lock → 关 probe DB 原样普通错误；Store 结构改持 *BaseStore，LookupIP/LookupCIDR/Metadata/Close 替换 v1 方法体为 delegation（签名零 diff，v1 方法体删除）；WriteRecord 改为显式返回写入失败 error（不依赖 s.db）"
+    exit_signal: "OpenCurrent 打开 base-build 产出 v2 库 → *Store 可用、查询正确；打开 v1 库 → errors.Is(err, ErrLegacyFormat)；打开缺 capability 库 → ErrIncompleteSchema；打开空目录（无 metadata）→ 普通错误非 ErrLegacyFormat；任一错误路径后再 OpenCurrent 同目录不报 lock 冲突（probe DB 已关）；Store.WriteRecord 调用返回明确 error（非 panic、不依赖 s.db）；cli 5 调用点 grep 签名零 diff"
+    status: done
+
+  - action: "BuildFromCSV 收口 + currentFormatVersion 升级（builder.go + types.go）：BuildFromCSV 主体改调 buildV2FromCSV（一行 delegation）；types.go currentFormatVersion 从 byte=1 改 byte=2。与 step3 同 commit（原子切换，不出现能构建 v2 但程序不认 v2 的中间态）"
+    exit_signal: "geoprism ipdb build --csv X 产 v2 库（Metadata.FormatVersion=2, SchemaFeatures=PrimaryLPM|CIDRStartIdx）；grep currentFormatVersion types.go 为 byte = 2；端到端 geoprism 10.1.2.3 命中正确最长前缀、geoprism 10.1.2.0/24 返回全部相交网段"
+    status: done
+
+  - action: "property test + benchmark + 质量门（store_v2_test.go 或合并）：property test 随机 prefix 集 + 暴力 oracle（单 IP 取 Bits() 最大的包含 prefix、CIDR 取全部相交）1000 次 fuzz，覆盖 /0、/32、/128、同起始不同 prefixLen、多父覆盖、完全相同 prefix 重复输入（应 reject）；benchmark IPv4/IPv6 冷热缓存 p50/p95 + 1/10/50 IP 批量；修正收口连带的既有测试断言（§3 已知需调整清单）；跑 go vet + gofmt -l + git diff --check + go test ./..."
+    exit_signal: "property test 全绿（与暴力 oracle 一致）；benchmark 数据记录进 acceptance；§3 已知需调整的既有测试（TestBuildFromCSVRejectsOverlappingCIDR / TestOpenBaseV2RejectsV1Format / TestLookupCIDR / issue_writeback_fix_test v1 子测试 / cli buildTestIPDB 下游）全部修正或确认无需改；go vet ./... + gofmt -l + git diff --check + go test ./...（全仓含 cli 回归）全绿"
+    status: done
+
+checks:
+  # 名词契约（来源：第 2.1 节）
+  - item: "BaseStore 新增 LookupIP(addr netip.Addr) (Record, bool, error) + LookupCIDR(query netip.Prefix) ([]Record, error)；不改 BaseStore 结构与字段、不改 openBaseV2 函数体（前置 feature 产出零改动）"
+    source: 名词契约
+    status: passed
+  - item: "Store 过渡壳：结构改持 *BaseStore（不再持 s.db）；LookupIP/LookupCIDR/Metadata/Close 公开方法签名零 diff（(ip string)/(cidr string) 入参不变）、方法体替换为 delegation；v1 方法体删除（Go 同 receiver 同名方法不能并存）"
+    source: 名词契约
+    status: passed
+  - item: "WriteRecord 公开签名保留（本 feature 不删，归 integration），但方法体改为显式返回写入失败 error，不依赖 s.db 字段、不触发隐式 Pebble ReadOnly 失败"
+    source: 名词契约
+    status: passed
+  - item: "ErrLegacyFormat / ErrIncompleteSchema / ErrCorruptIndex 为 sentinel error，可 errors.Is 判定；定义于 store_v2.go"
+    source: 名词契约
+    status: passed
+  - item: "OpenCurrent 公开签名 (rootDir string) (*Store, error) 不变；内部实现改为 ReadOnly 打开 + 分类判定（finding 1 边界）"
+    source: 名词契约
+    status: passed
+  - item: "BuildFromCSV 公开签名不变，主体改调 buildV2FromCSV；currentFormatVersion 从 byte=1 升到 byte=2"
+    source: 名词契约
+    status: passed
+
+  # 编排骨架 / 流程级约束（来源：第 2.2 节）
+  - item: "LPM 正确性：LookupIP 返回覆盖 addr 的最具体网段（最长前缀），ladder 从 maxBits 递减首个命中即返回，天然对重叠正确（不依赖不重叠前提）"
+    source: 流程级约束
+    status: passed
+  - item: "CIDR 完整性：ancestors 段对 query.Addr() 逐 L mask（覆盖所有起始≤query 起始且相交的超集，含起始<query 的情况）+ self/descendants 段扫 cidr 起始地址区间 + prefixLen>=query.Bits()（覆盖起始≥query 起始的相交网段），两段并集=全部相交网段"
+    source: 流程级约束
+    status: passed
+  - item: "cidr→primary 回查：每条 cidr key 命中后必须回查 primary 取 value（cidr value 零长度）；cidr 有 primary 无 → ErrCorruptIndex 不静默跳过"
+    source: 流程级约束
+    status: passed
+  - item: "回填 Network：decodeBaseRecordValueV2 返回 Record.Network 为空，LookupIP/LookupCIDR 必须据命中 primary key 还原 prefix 后回填 Record.Network = prefix.String()"
+    source: 流程级约束
+    status: passed
+  - item: "ReadOnly 不写：BaseStore.LookupIP/LookupCIDR 不得写库"
+    source: 流程级约束
+    status: passed
+  - item: "ErrLegacyFormat 边界精确（finding 1）：只有成功读到 metadata 且 FormatVersion != 2 才返回 ErrLegacyFormat；metadata 读不到/JSON 损坏/lock/打不开 → 原样普通错误，不误判"
+    source: 流程级约束
+    status: passed
+  - item: "probe DB 资源管理（finding 2）：OpenCurrent probe 阶段的 closer 与 db 必须在调用 openBaseV2 之前彻底关闭；所有错误分支（含 ErrLegacyFormat/ErrIncompleteSchema/普通错误）都必须关 probe DB 再返回"
+    source: 流程级约束
+    status: passed
+  - item: "确定性排序：LookupCIDR 结果按 encodeCIDRKeyV2(prefix) 字节序排序（= startAddr 升序 + prefixLen 升序），避免 nondeterministic order"
+    source: 流程级约束
+    status: passed
+  - item: "原子收口：BuildFromCSV 改调 + OpenCurrent 改调 + currentFormatVersion 升级在同一 commit，不出现中间态"
+    source: 流程级约束
+    status: passed
+
+  # 挂载点（来源：第 2.3 节）
+  - item: "公开 BuildFromCSV 切到 v2 builder（geoprism ipdb build 产 v2 库）"
+    source: 挂载点
+    status: passed
+  - item: "公开 OpenCurrent 切到 v2 + capability/v1 拒绝（打开 v2 库走真查询，不再 v1 全 MISS）"
+    source: 挂载点
+    status: passed
+  - item: "currentFormatVersion = 2（库级版本标识）"
+    source: 挂载点
+    status: passed
+  - item: "BaseStore.LookupIP 真 LPM ladder（单 IP 查询正确性）"
+    source: 挂载点
+    status: passed
+  - item: "BaseStore.LookupCIDR 三段查询（CIDR 查询返回全部相交网段含多层祖先）"
+    source: 挂载点
+    status: passed
+
+  # 验收场景（来源：第 3 节）
+  - item: "正常路径：库含 10.0.0.0/8+10.1.0.0/16+10.1.2.0/24，LookupIP(10.1.2.3) 命中 /24、LookupIP(10.1.5.5) 命中 /16、LookupIP(20.0.0.1) matched=false"
+    source: 验收场景
+    status: passed
+  - item: "三段 CIDR 多层祖先：库含 /8+/16，LookupCIDR(10.1.2.0/24) 返回 2 条按 startAddr 升序"
+    source: 验收场景
+    status: passed
+  - item: "descendants 段：库含 10.0.0.0/24+10.0.0.0/25+10.0.0.128/25，LookupCIDR(10.0.0.0/24) 返回 3 条（self + 2 descendants）"
+    source: 验收场景
+    status: passed
+  - item: "self 段：库含 10.0.0.0/24，LookupCIDR(10.0.0.0/24) 返回 1 条（self）"
+    source: 验收场景
+    status: passed
+  - item: "ancestors 捕获超集起始<query（核心边界）：库含 1.0.0.0/24，LookupCIDR(1.0.0.128/25) 返回 1 条 1.0.0.0/24（防 ancestors 退化成纯 mask 链）"
+    source: 验收场景
+    status: passed
+  - item: "IPv6 ladder：库含 2001:db8::/32+2001:db8:1::/48，LookupIP(2001:db8:1::5) 命中 /48"
+    source: 验收场景
+    status: passed
+  - item: "Network 回填：任一命中结果 Record.Network 为规范 CIDR 字符串（非空），业务字段与构建输入一致"
+    source: 验收场景
+    status: passed
+  - item: "端到端最小闭环：geoprism ipdb build --csv X 后 geoprism 10.1.2.3 命中正确最长前缀、geoprism 10.1.2.0/24 返回全部相交网段"
+    source: 验收场景
+    status: passed
+  - item: "/0 网段：库含 0.0.0.0/0，任意 IP LookupIP 命中 /0（ladder L=0 兜底）"
+    source: 验收场景
+    status: passed
+  - item: "/32（IPv4）/128（IPv6）边界：单 IP 网段 LookupIP 命中 /32；LookupCIDR 查该 /32 返回 self"
+    source: 验收场景
+    status: passed
+  - item: "同起始不同 prefixLen：库含 10.0.0.0/8+10.0.0.0/16（同起始合法），LookupIP(10.0.0.5) 命中 /16；LookupCIDR(10.0.0.0/24) 返回 2 条"
+    source: 验收场景
+    status: passed
+  - item: "property test 暴力 oracle：随机 prefix 集 + 1000 次 fuzz，结果与暴力 oracle（单 IP 取 Bits() 最大的包含 prefix、CIDR 取全部相交）一致"
+    source: 验收场景
+    status: passed
+  - item: "v1 识别：OpenCurrent 打开 v1 库（FormatVersion==1）→ ErrLegacyFormat（errors.Is 可判定）"
+    source: 验收场景
+    status: passed
+  - item: "非 legacy 打开失败（finding 1 边界）：OpenCurrent 打开空目录/JSON 损坏/lock 失败 → 普通错误，errors.Is(err, ErrLegacyFormat) 为 false"
+    source: 验收场景
+    status: passed
+  - item: "capability 拒绝：手工 FormatVersion==2 但 SchemaFeatures 缺 CIDRStartIdx → OpenCurrent 返回 ErrIncompleteSchema"
+    source: 验收场景
+    status: passed
+  - item: "索引损坏：手工 cidr 有 primary 无 → LookupCIDR 返回 ErrCorruptIndex"
+    source: 验收场景
+    status: passed
+  - item: "非法输入：Store.LookupIP('not-an-ip') / LookupCIDR('not-a-cidr') → 明确 error"
+    source: 验收场景
+    status: passed
+  - item: "WriteRecord 显式失败（finding 3）：Store.WriteRecord 在 v2 库下返回明确写入失败 error，不依赖 s.db、不触发隐式 Pebble ReadOnly"
+    source: 验收场景
+    status: passed
+  - item: "probe DB 资源释放（finding 2）：OpenCurrent 所有路径执行后再 OpenCurrent 同目录不报 lock 冲突；成功路径 openBaseV2 二次打开也不冲突"
+    source: 验收场景
+    status: passed
+
+  # 明确不做的反向核对（来源：第 3 节）
+  - item: "grep -rn 'OpenCurrentBase|OpenOverlay|OverlayStore|IPCandidate|selectCandidate|PutOverlay' backend/ internal/ 为空（归 overlay/integration）"
+    source: 反向核对
+    status: passed
+  - item: "cli 5 调用点（app.go/ip_lookup.go/cidr_lookup.go/ip_match.go/ns_info.go）LookupIP/LookupCIDR/Metadata/ensureIPDBStore 签名零 diff（*ipdb.Store 类型不变）"
+    source: 反向核对
+    status: passed
+  - item: "App 结构体 ipdbStore *ipdb.Store 字段保留（不引入 ipdbBase/ipdbOverlay）"
+    source: 反向核对
+    status: passed
+  - item: "Store.WriteRecord 签名仍存在但方法体不依赖 s.db（改为显式返回 error）；本 feature 不删该签名"
+    source: 反向核对
+    status: passed
+  - item: "currentFormatVersion grep 为 byte = 2"
+    source: 反向核对
+    status: passed
+  - item: "openBaseV2 / buildV2FromCSV / v2 codec 10 函数 / BaseStore 结构 git diff 为空（前置 feature 产出零改动）"
+    source: 反向核对
+    status: passed
+
+  # 质量门
+  - item: "质量门：go vet ./... + gofmt -l + git diff --check + go test ./...（全仓含 cli 回归）全绿"
+    source: 质量门
+    status: passed

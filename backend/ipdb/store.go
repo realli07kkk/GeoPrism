@@ -1,7 +1,6 @@
 package ipdb
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,16 +14,28 @@ import (
 
 var ErrNoCurrentDatabase = errors.New("未找到可用的离线 IP 库")
 
-// Store 表示当前启用的离线 IP 库。
+// Store 是 v2 base 库的公开过渡壳：内部持有 *BaseStore，公开方法转调 v2 真查询。
+//
+// ipdb-v2-query 收口时引入此壳，使 cli 5 个调用点的 *ipdb.Store 类型与方法签名
+// 零 diff；ipdb-lookup-integration 阶段拆 Store、App 改持 *BaseStore/*OverlayStore
+// 时清除本壳（roadmap §9 2026-06-22 实施顺序调整）。
 type Store struct {
-	rootDir   string
-	buildID   string
-	db        *pebble.DB
-	metadata  Metadata
-	dbDirPath string
+	base    *BaseStore
+	rootDir string
+	buildID string
 }
 
-// OpenCurrent 打开当前启用的离线 IP 库。
+// OpenCurrent 读 CURRENT 得 buildID 后打开当前激活的 v2 base 库，包成 *Store。
+//
+// 版本/capability 判定边界（finding 1）：
+//   - 读 metadata 失败 / JSON 损坏 / lock / 打不开 → 关 probe DB 后原样上抛普通 error（不包装）
+//   - 读到 metadata 且 FormatVersion != 2            → 关 probe DB 后 ErrLegacyFormat（仅此一类）
+//   - FormatVersion == 2 但缺 PrimaryLPM|CIDRStartIdx → 关 probe DB 后 ErrIncompleteSchema
+//   - 一切就绪                                        → 关 probe DB → 调 openBaseV2 → 包成 *Store
+//
+// probe DB 资源管理（finding 2）：OpenCurrent 自己 ReadOnly pebble.Open 得到的 probe DB
+// 必须在调用 openBaseV2 之前彻底关闭（openBaseV2 会二次打开同目录）。所有错误分支
+// （含 ErrLegacyFormat/ErrIncompleteSchema/普通错误）都关 probe DB 再返回。
 func OpenCurrent(rootDir string) (*Store, error) {
 	currentPath := filepath.Join(rootDir, currentFileName)
 	currentData, err := os.ReadFile(currentPath)
@@ -48,155 +59,85 @@ func OpenCurrent(rootDir string) (*Store, error) {
 		return nil, fmt.Errorf("检查离线库目录失败: %w", err)
 	}
 
-	db, err := pebble.Open(dbDirPath, &pebble.Options{
-		Logger: silentLogger{},
+	// probe DB：ReadOnly 打开 + 读 metadata 判版本。确认 v2 后关闭，再调 openBaseV2。
+	probeDB, err := pebble.Open(dbDirPath, &pebble.Options{
+		ReadOnly: true,
+		Logger:   silentLogger{},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("打开 Pebble 数据库失败: %w", err)
+		return nil, fmt.Errorf("打开离线库失败: %w", err)
 	}
 
-	metaValue, closer, err := db.Get(metadataKey)
+	// 读 metadata 失败时仍需关闭 probe DB。metadata 读取失败属"库打不开"，
+	// 不是"旧版格式"（finding 1 边界），原样上抛普通 error。
+	metaValue, closer, err := probeDB.Get(metadataKey)
 	if err != nil {
-		db.Close()
+		_ = probeDB.Close()
 		return nil, fmt.Errorf("读取离线库元数据失败: %w", err)
 	}
 
 	var metadata Metadata
 	if err := json.Unmarshal(metaValue, &metadata); err != nil {
-		closer.Close()
-		db.Close()
+		_ = closer.Close()
+		_ = probeDB.Close()
 		return nil, fmt.Errorf("解析离线库元数据失败: %w", err)
 	}
 	if err := closer.Close(); err != nil {
-		db.Close()
+		_ = probeDB.Close()
 		return nil, fmt.Errorf("关闭元数据读取器失败: %w", err)
 	}
 
+	// 版本判定（finding 1 边界）：只有成功读到 metadata 且 FormatVersion != 2 才判 legacy。
+	if metadata.FormatVersion != int(formatVersionV2) {
+		_ = probeDB.Close()
+		return nil, fmt.Errorf("%w: FormatVersion=%d, want %d", ErrLegacyFormat, metadata.FormatVersion, formatVersionV2)
+	}
+
+	// capability 判定：缺 primary|cidr 索引能力视为不完整 schema，提示重建。
+	if metadata.SchemaFeatures&SchemaFeaturePrimaryLPM == 0 || metadata.SchemaFeatures&SchemaFeatureCIDRStartIdx == 0 {
+		_ = probeDB.Close()
+		return nil, fmt.Errorf("%w: SchemaFeatures=%d, want 包含 PrimaryLPM|CIDRStartIdx",
+			ErrIncompleteSchema, metadata.SchemaFeatures)
+	}
+
+	// 确认是完整 v2 库，关闭 probe DB 后调 openBaseV2（此时 sanity 必过，二次打开无 lock 冲突）。
+	if err := probeDB.Close(); err != nil {
+		return nil, fmt.Errorf("关闭 probe 库失败: %w", err)
+	}
+
+	base, err := openBaseV2(rootDir, buildID)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Store{
-		rootDir:   rootDir,
-		buildID:   buildID,
-		db:        db,
-		metadata:  metadata,
-		dbDirPath: dbDirPath,
+		base:    base,
+		rootDir: rootDir,
+		buildID: buildID,
 	}, nil
 }
 
-// WriteRecord 向数据库写入单条 /32 或 /128 记录。
-func (s *Store) WriteRecord(record Record) error {
-	if s == nil || s.db == nil {
-		return ErrNoCurrentDatabase
-	}
-
-	prefix, err := netip.ParsePrefix(record.Network)
-	if err != nil {
-		return fmt.Errorf("解析网段失败: %w", err)
-	}
-
-	key, err := encodePrefixKey(prefix)
-	if err != nil {
-		return fmt.Errorf("编码 key 失败: %w", err)
-	}
-
-	value, err := encodeRecordValue(prefix.Bits(), record)
-	if err != nil {
-		return fmt.Errorf("编码 value 失败: %w", err)
-	}
-
-	// 复用已有的读写句柄写入
-	if err := s.db.Set(key, value, nil); err != nil {
-		return fmt.Errorf("写入记录失败: %w", err)
-	}
-
-	return nil
-}
-
-// Close 关闭离线库。
-func (s *Store) Close() error {
-	if s == nil || s.db == nil {
-		return nil
-	}
-	db := s.db
-	s.db = nil
-	return db.Close()
-}
-
-// Metadata 返回离线库元信息。
-func (s *Store) Metadata() Metadata {
-	if s == nil {
-		return Metadata{}
-	}
-	return s.metadata
-}
-
-// LookupIP 查询单个 IP 的离线信息。
+// LookupIP 转调 v2 BaseStore 真 LPM ladder。签名与 v1 零 diff。
 func (s *Store) LookupIP(ip string) (Match, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.base == nil {
 		return Match{IP: ip}, ErrNoCurrentDatabase
 	}
 
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
-		return Match{}, fmt.Errorf("IP 格式非法: %w", err)
+		return Match{IP: ip}, fmt.Errorf("IP 格式非法: %w", err)
 	}
 
-	queryKey, err := encodeAddrKey(addr)
+	rec, matched, err := s.base.LookupIP(addr)
 	if err != nil {
 		return Match{}, err
 	}
-
-	lowerBound, upperBound, err := boundsForAddr(addr)
-	if err != nil {
-		return Match{}, err
-	}
-
-	iter, err := s.db.NewIter(&pebble.IterOptions{
-		LowerBound: lowerBound,
-		UpperBound: upperBound,
-	})
-	if err != nil {
-		return Match{}, fmt.Errorf("创建迭代器失败: %w", err)
-	}
-	defer iter.Close()
-
-	valid := iter.SeekGE(queryKey)
-	if valid && bytes.Compare(iter.Key(), queryKey) > 0 {
-		valid = iter.Prev()
-	}
-	if !valid {
-		valid = iter.Last()
-	}
-	if !valid {
-		return Match{IP: ip}, nil
-	}
-
-	startAddr, _, err := decodeKeyAddr(iter.Key())
-	if err != nil {
-		return Match{}, fmt.Errorf("解析命中 key 失败: %w", err)
-	}
-
-	record, err := decodeRecordValue(iter.Value(), startAddr)
-	if err != nil {
-		return Match{}, fmt.Errorf("解析命中 value 失败: %w", err)
-	}
-
-	prefix, err := netip.ParsePrefix(record.Network)
-	if err != nil {
-		return Match{}, fmt.Errorf("恢复命中网段失败: %w", err)
-	}
-	if !prefix.Contains(addr) {
-		return Match{IP: ip}, nil
-	}
-
-	return Match{
-		IP:      ip,
-		Matched: true,
-		Record:  record,
-	}, nil
+	return Match{IP: ip, Matched: matched, Record: rec}, nil
 }
 
-// LookupCIDR 查询与指定 CIDR 相交的所有离线记录。
+// LookupCIDR 转调 v2 BaseStore 三段查询。签名与 v1 零 diff。
 func (s *Store) LookupCIDR(cidr string) ([]Record, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.base == nil {
 		return nil, ErrNoCurrentDatabase
 	}
 
@@ -204,113 +145,30 @@ func (s *Store) LookupCIDR(cidr string) ([]Record, error) {
 	if err != nil {
 		return nil, fmt.Errorf("CIDR 格式非法: %w", err)
 	}
-	queryPrefix = queryPrefix.Masked()
-
-	queryStartKey, err := encodeAddrKey(queryPrefix.Addr())
-	if err != nil {
-		return nil, err
-	}
-
-	queryEndAddr, err := prefixLastAddr(queryPrefix)
-	if err != nil {
-		return nil, fmt.Errorf("计算查询区间末尾失败: %w", err)
-	}
-	queryEndKey, err := encodeAddrKey(queryEndAddr)
-	if err != nil {
-		return nil, err
-	}
-
-	lowerBound, upperBound, err := boundsForAddr(queryPrefix.Addr())
-	if err != nil {
-		return nil, err
-	}
-
-	iter, err := s.db.NewIter(&pebble.IterOptions{
-		LowerBound: lowerBound,
-		UpperBound: upperBound,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("创建迭代器失败: %w", err)
-	}
-	defer iter.Close()
-
-	results := make([]Record, 0)
-
-	// 先检查 queryStart 前一条记录，避免漏掉覆盖 queryStart 的大网段。
-	valid := iter.SeekGE(queryStartKey)
-	if !valid {
-		if !iter.Last() {
-			return results, nil
-		}
-		record, recordPrefix, err := decodeIterRecord(iter)
-		if err != nil {
-			return nil, err
-		}
-		if prefixesOverlap(queryPrefix, recordPrefix) {
-			results = append(results, record)
-		}
-		return results, nil
-	}
-
-	if bytes.Compare(iter.Key(), queryStartKey) > 0 {
-		if iter.Prev() {
-			record, recordPrefix, err := decodeIterRecord(iter)
-			if err != nil {
-				return nil, err
-			}
-			if prefixesOverlap(queryPrefix, recordPrefix) {
-				results = append(results, record)
-			}
-		}
-		valid = iter.SeekGE(queryStartKey)
-	}
-
-	for ; valid; valid = iter.Next() {
-		if bytes.Compare(iter.Key(), queryEndKey) > 0 {
-			break
-		}
-
-		record, recordPrefix, err := decodeIterRecord(iter)
-		if err != nil {
-			return nil, err
-		}
-		if prefixesOverlap(queryPrefix, recordPrefix) {
-			results = append(results, record)
-		}
-	}
-
-	return results, nil
+	return s.base.LookupCIDR(queryPrefix)
 }
 
-func decodeIterRecord(iter *pebble.Iterator) (Record, netip.Prefix, error) {
-	startAddr, _, err := decodeKeyAddr(iter.Key())
-	if err != nil {
-		return Record{}, netip.Prefix{}, fmt.Errorf("解析命中 key 失败: %w", err)
+// Metadata 转调 v2 BaseStore.Metadata。
+func (s *Store) Metadata() Metadata {
+	if s == nil || s.base == nil {
+		return Metadata{}
 	}
-
-	record, err := decodeRecordValue(iter.Value(), startAddr)
-	if err != nil {
-		return Record{}, netip.Prefix{}, fmt.Errorf("解析命中 value 失败: %w", err)
-	}
-
-	prefix, err := netip.ParsePrefix(record.Network)
-	if err != nil {
-		return Record{}, netip.Prefix{}, fmt.Errorf("恢复命中网段失败: %w", err)
-	}
-
-	return record, prefix.Masked(), nil
+	return s.base.Metadata()
 }
 
-func prefixesOverlap(a, b netip.Prefix) bool {
-	a = a.Masked()
-	b = b.Masked()
-
-	if !a.IsValid() || !b.IsValid() {
-		return false
+// Close 关闭离线库（幂等）。
+func (s *Store) Close() error {
+	if s == nil || s.base == nil {
+		return nil
 	}
-	if a.Addr().BitLen() != b.Addr().BitLen() {
-		return false
-	}
+	base := s.base
+	s.base = nil
+	return base.Close()
+}
 
-	return a.Contains(b.Addr()) || b.Contains(a.Addr())
+// WriteRecord 公开签名保留（归 ipdb-lookup-integration 删除），但 v2 base 库只读，
+// 运行期回写本就不被允许（止血语义）。本方法改为显式返回写入失败 error，
+// 不再依赖任何 Pebble 句柄、不触发隐式 ReadOnly 失败（finding 3）。
+func (s *Store) WriteRecord(record Record) error {
+	return errors.New("base 库只读，不支持运行期写入")
 }
