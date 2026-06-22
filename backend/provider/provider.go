@@ -45,6 +45,10 @@ type ProviderStore struct {
 	configPath string
 	mu         sync.RWMutex
 	providers  map[string]Provider
+	// order 记录 Provider 的 canonical 顺序（= TOML [[providers]] 声明顺序），
+	// 与 providers map 由同一把 mu 保护。List / GetEnabled 按此输出，
+	// save 按此写回，避免 map 迭代无序导致 JSON / 文本输出顺序不稳定。
+	order []string
 }
 
 type providersTOML struct {
@@ -110,6 +114,9 @@ func (s *ProviderStore) load() error {
 	}
 
 	providers := make(map[string]Provider, len(cfg.Providers))
+	// order 取 TOML [[providers]] 声明顺序；升级语义见 issue analysis：
+	// 只锁定当前磁盘顺序为新契约，不回填、不猜测已被旧版本 save 覆盖的历史顺序。
+	order := make([]string, 0, len(cfg.Providers))
 	for idx, provider := range cfg.Providers {
 		p := normalizeProvider(provider)
 		if err := validateProvider(p); err != nil {
@@ -119,25 +126,25 @@ func (s *ProviderStore) load() error {
 			return fmt.Errorf("Provider[%d] 校验失败: id %q 重复", idx, p.ID)
 		}
 		providers[p.ID] = p
+		order = append(order, p.ID)
 	}
 
 	s.providers = providers
+	s.order = order
 	return nil
 }
 
-// save 保存配置到文件
+// save 保存配置到文件。
+// 按 order（TOML 声明顺序）写回，不再按 ID 字典序重排——
+// 旧版本的 sort.Strings(ids) 会永久改写用户原始声明顺序，本次修复移除该行为。
 func (s *ProviderStore) save() error {
-	ids := make([]string, 0, len(s.providers))
-	for id := range s.providers {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-
 	cfg := providersTOML{
-		Providers: make([]Provider, 0, len(ids)),
+		Providers: make([]Provider, 0, len(s.order)),
 	}
-	for _, id := range ids {
-		cfg.Providers = append(cfg.Providers, s.providers[id])
+	for _, id := range s.order {
+		if p, ok := s.providers[id]; ok {
+			cfg.Providers = append(cfg.Providers, p)
+		}
 	}
 
 	data, err := toml.Marshal(cfg)
@@ -151,13 +158,15 @@ func (s *ProviderStore) save() error {
 	return os.WriteFile(s.configPath, data, 0644)
 }
 
-// List 获取所有 Provider
+// List 获取所有 Provider，按 order（TOML 声明顺序）输出
 func (s *ProviderStore) List() []Provider {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]Provider, 0, len(s.providers))
-	for _, p := range s.providers {
-		result = append(result, p)
+	result := make([]Provider, 0, len(s.order))
+	for _, id := range s.order {
+		if p, ok := s.providers[id]; ok {
+			result = append(result, p)
+		}
 	}
 	return result
 }
@@ -170,7 +179,8 @@ func (s *ProviderStore) Get(id string) (Provider, bool) {
 	return p, ok
 }
 
-// Upsert 创建或更新 Provider
+// Upsert 创建或更新 Provider。
+// 已存在：保留原位置；新增：追加到 order 末尾。order 与 providers map 同步维护。
 func (s *ProviderStore) Upsert(p Provider) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -181,11 +191,16 @@ func (s *ProviderStore) Upsert(p Provider) error {
 	if err := validateProvider(p); err != nil {
 		return err
 	}
+	_, exists := s.providers[p.ID]
 	s.providers[p.ID] = p
+	if !exists {
+		// 新增追加末尾；已存在不动 order（保留原位）。
+		s.order = append(s.order, p.ID)
+	}
 	return s.save()
 }
 
-// Delete 删除 Provider
+// Delete 删除 Provider，同步从 providers map 与 order 中移除
 func (s *ProviderStore) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -193,16 +208,24 @@ func (s *ProviderStore) Delete(id string) error {
 		return nil
 	}
 	delete(s.providers, id)
+	// 从 order 中移除该 ID，避免残留导致 save 写出幽灵条目。
+	newOrder := make([]string, 0, len(s.order))
+	for _, existing := range s.order {
+		if existing != id {
+			newOrder = append(newOrder, existing)
+		}
+	}
+	s.order = newOrder
 	return s.save()
 }
 
-// GetEnabled 获取所有启用的 Provider
+// GetEnabled 获取所有启用的 Provider，保留 order（TOML 声明顺序）中 enabled 子集的相对顺序
 func (s *ProviderStore) GetEnabled() []Provider {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]Provider, 0)
-	for _, p := range s.providers {
-		if p.Enabled {
+	for _, id := range s.order {
+		if p, ok := s.providers[id]; ok && p.Enabled {
 			result = append(result, p)
 		}
 	}

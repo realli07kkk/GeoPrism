@@ -4,7 +4,7 @@ slug: dns-query
 scope: 多 Provider DNS 查询子系统（域名解析、Provider 管理、连通性测试、NS zone 探测、反向 PTR）
 summary: 编排层把请求拆成 Provider 列表交给 resolver 并行查询；NS 信息走独立 zone 探测链
 status: current
-last_reviewed: 2026-06-20
+last_reviewed: 2026-06-22
 tags: [dns, resolver, provider, ns]
 depends_on:
   - ARCHITECTURE
@@ -43,14 +43,18 @@ graph TD
 
 **为什么这么分**：
 
-- **`resolver.QueryMulti` 只管"并发发查询、收原始 DNSAnswer"**——不关心 Provider 名字、不关心 NS、不做合并。它是个纯粹的 DNS 协议执行器，三个协议（DoH / DoT / DNS-UDP）共用一套 `*DNSAnswer` 输出格式（`backend/resolver/resolver.go:376`）。
+- **`resolver.QueryMulti` 只管"并发发查询、收原始 DNSAnswer、按输入顺序归位"**——不关心 Provider 名字、不关心 NS、不做合并、不自排序。它是个纯粹的 DNS 协议执行器，三个协议（DoH / DoT / DNS-UDP）共用一套 `*DNSAnswer` 输出格式（`backend/resolver/resolver.go:376`）。顺序契约见上方「并发模型」。
 - **编排层 `App.QueryDomain` 负责把 resolver 的输出翻译成 View**：补 Provider 名字、收集 IP 匹配、查 NS 信息（`internal/cli/app.go:627`）。View 是给 render 用的 DTO，实现 `render.*Source` 接口（见 `render/query.go:12`）。
 - **NS 信息是 query 的副产品但走独立子流程**：`queryNSInfo` 不依赖主查询结果，自己重新发 NS 查询（`internal/cli/ns_info.go:153`）。这样即使主查询失败（A 记录 NXDOMAIN），NS 信息仍可能有效。
 
 **契约**：
 
-- **Provider 选择**：`-p` 传名字走 `matchProvidersByName`（`internal/cli/app.go:337`），按 `Name` 字段大小写不敏感匹配；不传则用所有 `Enabled=true` 的 Provider。
-- **并发模型**：`QueryMulti` 对每个 Provider 起一个 goroutine，用 buffered channel 收集（`backend/resolver/resolver.go:391`）。结果顺序不保证——由 channel 收集顺序决定。
+- **Provider 选择**：`-p` 传名字走 `matchProvidersByName`（`internal/cli/app.go:337`），按 `Name` 字段大小写不敏感匹配；不传则用所有 `Enabled=true` 的 Provider。同名 Provider 取**声明顺序**第一个（依赖 `ProviderStore.List` 的稳定顺序，见下）。
+- **并发模型**：`QueryMulti` 对每个 Provider 起一个 goroutine，用 buffered channel 收集（`backend/resolver/resolver.go:391`）。**`Answers[i]` 严格对应传入 `providers[i]`，与 goroutine 完成顺序无关**——预分配完整长度数组，channel 消息携带 index，接收循环按 index 归位；成功 / 失败 / 空响应（`answer == nil` 且 `err == nil`）均占据原 index 不过滤不挪位（归一化见 `normalizeAnswer`，`resolver.go`）。这是 issue `2026-06-20-nondeterministic-result-order` 后确立的顺序契约。
+- **顺序契约（端到端）**：
+    - 默认查询：`answers[]` 按 `ProviderStore.GetEnabled()` 顺序 = TOML `[[providers]]` 声明顺序（仅 enabled 子集的相对顺序）。
+    - 显式 `-p a,b,c`：按用户参数顺序 a → b → c，不被配置顺序覆盖。
+    - `QueryMulti` 只忠实保留传入 `providers` slice 顺序，不自排序。顺序 canonical 来源在 `ProviderStore`（见第 3 节），CLI 层 1:1 透传。
 - **超时**：默认 5000ms，`--timeout` 可覆盖；DoT 用 `conn.SetDeadline`、DoH 用 `context.WithTimeout`、DNS-UDP 用 `dns.Client.Timeout`（各自在 resolver.go 内）。
 
 ## 3. 数据与状态
@@ -65,7 +69,7 @@ graph TD
 | `cli.QueryResultView` | `internal/cli/app.go:582` | 整次查询的对外视图，含 Answers / IPMatches / NSInfo |
 | `cli.NSInfoView` | `internal/cli/ns_info.go:30` | NS 信息视图 |
 
-**所有权**：Provider 列表归 `ProviderStore`（`backend/provider/provider.go:44`），读写有 `sync.RWMutex` 保护——虽然 CLI 当前只读，但 Upsert/Delete 方法已暴露给未来扩展。
+**所有权**：Provider 列表归 `ProviderStore`（`backend/provider/provider.go:44`），读写有 `sync.RWMutex` 保护。存储模型是 `map[string]Provider` + `order []string` 双结构，二者由同一把 `mu` 保护，`order` 记录 canonical 顺序 = TOML `[[providers]]` 声明顺序：`List` / `GetEnabled` 按 `order` 输出（`GetEnabled` 保留 enabled 子集相对顺序）；`Upsert` 更新已有保留原位、新增追加末尾；`Delete` 同步删 map 与 `order`；`save` 按 `order` 写回（不再按 ID 字典序重排）。`load` 直接取磁盘 `[[providers]]` 物理排列填 `order`——升级语义是「按现状锁定为新契约」，不回填、不猜测已被旧版本 `save` 覆盖的历史顺序（见 issue `2026-06-20-nondeterministic-result-order`）。
 
 **无持久化**：DNS 查询结果只在内存，不落盘。
 
@@ -95,9 +99,10 @@ graph TD
 | `backend/resolver/resolver.go:235` | `QueryDoT`：DoT 查询（TLS + 长度前缀） |
 | `backend/resolver/resolver.go:312` | `QueryDNS`：原生 UDP 查询 |
 | `backend/resolver/resolver.go:356` | `Query`：按 protocol 分流到上面三个 |
-| `backend/resolver/resolver.go:376` | `QueryMulti`：并发 fan-out + 收集 |
+| `backend/resolver/resolver.go:376` | `QueryMulti`：并发 fan-out + 按 index 归位收集（保序契约） |
 | `backend/resolver/resolver.go:430` | `TestConnection`：连通性测试的底层实现 |
 | `backend/provider/provider.go:55` | `NewProviderStore`：加载 / 首次写默认 TOML |
+| `backend/provider/provider.go` `ProviderStore` | `map + order` 双结构；`List`/`GetEnabled`/`save` 按 `order`，`Upsert`/`Delete` 维护 `order` |
 | `render/query.go:12` | `QueryAnswerSource` 接口：View 要实现的方法集 |
 | `render/style.go:30` | `isTTY`：输出模式切换的检测点 |
 
@@ -114,3 +119,7 @@ graph TD
 - 上层：[ARCHITECTURE.md](./ARCHITECTURE.md)
 - 承载需求：[多 Provider DNS 查询](../requirements/multi-provider-dns-query.md)
 - 配套子系统：[ip-lookup.md](./ip-lookup.md)（query 流程会调用 `collectIPMatches` 补 IP 匹配详情）
+
+## 8. 变更日志
+
+- **2026-06-22**（issue `2026-06-20-nondeterministic-result-order`）：`QueryMulti` 从「结果顺序不保证」改为「按输入 index 归位保序」（成功 / 失败 / 空响应均落原位）；`ProviderStore` 新增 `order []string`，`List` / `GetEnabled` / `save` 改按 TOML 声明顺序（移除按 ID 字典序重排）；`-p a,b,c` 显式顺序契约确立。同步更新第 2 节并发模型 / 顺序契约、第 3 节所有权、第 5 节代码锚点。
