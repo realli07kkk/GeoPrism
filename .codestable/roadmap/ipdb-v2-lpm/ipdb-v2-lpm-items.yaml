@@ -5,8 +5,8 @@ items:
   - slug: ipdb-v2-schema
     description: v2 primary/cidr/overlay key codec + base value v2 与 overlay value v1 两套独立 codec + SchemaFeatures 定义；保持 v1 公开行为不变、不改 currentFormatVersion
     depends_on: []
-    status: planned
-    feature: null
+    status: done
+    feature: 2026-06-22-ipdb-v2-schema
     minimal_loop: false
     notes: 契约见 roadmap §4.1/§4.2；纯编码加单测，无对外行为变化；拍板重复 prefix reject 与 CIDR 零长度 value
 
