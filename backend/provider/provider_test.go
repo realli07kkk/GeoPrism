@@ -361,3 +361,264 @@ func captureStderr(t *testing.T, fn func()) string {
 	}
 	return string(data)
 }
+
+// --- 顺序确定性测试（issue 2026-06-20-nondeterministic-result-order 测试矩阵 4-7 条）---
+
+// providerIDs 提取 Provider 列表的 ID 序列，便于断言顺序而非整对象。
+func providerIDs(ps []Provider) []string {
+	ids := make([]string, len(ps))
+	for i, p := range ps {
+		ids[i] = p.ID
+	}
+	return ids
+}
+
+// equalStringSlice 比较两个字符串切片是否逐元素相等。
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// 矩阵 4：load 后 List 顺序 == TOML 声明顺序（非 ID 字典序、非 map 随机序）。
+func TestProviderStoreListPreservesTOMLDeclarationOrder(t *testing.T) {
+	dir := t.TempDir()
+	// 故意用 ID 字典序与声明顺序相反的配置，确保不是巧合。
+	writeProvidersFile(t, dir, `
+[[providers]]
+id = "zeta"
+name = "Zeta"
+protocol = "doh"
+endpoint = "https://dns.zeta.example/dns-query"
+server_name = "dns.zeta.example"
+port = 443
+timeout_ms = 1000
+enabled = true
+tags = []
+
+[[providers]]
+id = "alpha"
+name = "Alpha"
+protocol = "doh"
+endpoint = "https://dns.alpha.example/dns-query"
+server_name = "dns.alpha.example"
+port = 443
+timeout_ms = 1000
+enabled = true
+tags = []
+
+[[providers]]
+id = "mid"
+name = "Mid"
+protocol = "doh"
+endpoint = "https://dns.mid.example/dns-query"
+server_name = "dns.mid.example"
+port = 443
+timeout_ms = 1000
+enabled = true
+tags = []
+`)
+
+	store, err := NewProviderStore(dir)
+	if err != nil {
+		t.Fatalf("NewProviderStore() error = %v", err)
+	}
+
+	got := providerIDs(store.List())
+	want := []string{"zeta", "alpha", "mid"}
+	if !equalStringSlice(got, want) {
+		t.Fatalf("List() order = %v, want %v (TOML declaration order, not ID sorted)", got, want)
+	}
+}
+
+// 矩阵 5：GetEnabled 过滤后保持剩余 Provider 的相对声明顺序。
+func TestProviderStoreGetEnabledPreservesRelativeOrder(t *testing.T) {
+	dir := t.TempDir()
+	writeProvidersFile(t, dir, `
+[[providers]]
+id = "zeta"
+name = "Zeta"
+protocol = "doh"
+endpoint = "https://dns.zeta.example/dns-query"
+server_name = "dns.zeta.example"
+port = 443
+timeout_ms = 1000
+enabled = true
+tags = []
+
+[[providers]]
+id = "alpha"
+name = "Alpha"
+protocol = "doh"
+endpoint = "https://dns.alpha.example/dns-query"
+server_name = "dns.alpha.example"
+port = 443
+timeout_ms = 1000
+enabled = false
+tags = []
+
+[[providers]]
+id = "mid"
+name = "Mid"
+protocol = "doh"
+endpoint = "https://dns.mid.example/dns-query"
+server_name = "dns.mid.example"
+port = 443
+timeout_ms = 1000
+enabled = true
+tags = []
+`)
+
+	store, err := NewProviderStore(dir)
+	if err != nil {
+		t.Fatalf("NewProviderStore() error = %v", err)
+	}
+
+	got := providerIDs(store.GetEnabled())
+	want := []string{"zeta", "mid"}
+	if !equalStringSlice(got, want) {
+		t.Fatalf("GetEnabled() order = %v, want %v (relative declaration order of enabled subset)", got, want)
+	}
+}
+
+// 矩阵 6：Upsert 更新已有 Provider 不改变其位置。
+func TestProviderStoreUpsertUpdateKeepsPosition(t *testing.T) {
+	dir := t.TempDir()
+	writeProvidersFile(t, dir, `
+[[providers]]
+id = "zeta"
+name = "Zeta"
+protocol = "doh"
+endpoint = "https://dns.zeta.example/dns-query"
+server_name = "dns.zeta.example"
+port = 443
+timeout_ms = 1000
+enabled = true
+tags = []
+
+[[providers]]
+id = "alpha"
+name = "Alpha"
+protocol = "doh"
+endpoint = "https://dns.alpha.example/dns-query"
+server_name = "dns.alpha.example"
+port = 443
+timeout_ms = 1000
+enabled = true
+tags = []
+
+[[providers]]
+id = "mid"
+name = "Mid"
+protocol = "doh"
+endpoint = "https://dns.mid.example/dns-query"
+server_name = "dns.mid.example"
+port = 443
+timeout_ms = 1000
+enabled = true
+tags = []
+`)
+
+	store, err := NewProviderStore(dir)
+	if err != nil {
+		t.Fatalf("NewProviderStore() error = %v", err)
+	}
+
+	// 更新中间的 alpha，改其 endpoint。
+	if err := store.Upsert(Provider{
+		ID:         "alpha",
+		Name:       "Alpha-Updated",
+		Protocol:   ProtocolDoH,
+		Endpoint:   "https://dns.alpha.example/v2",
+		ServerName: "dns.alpha.example",
+		Port:       443,
+		Timeout:    2000,
+		Enabled:    true,
+		Tags:       []string{"v2"},
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	got := providerIDs(store.List())
+	want := []string{"zeta", "alpha", "mid"}
+	if !equalStringSlice(got, want) {
+		t.Fatalf("after Upsert(update), List() order = %v, want %v (alpha keeps original position)", got, want)
+	}
+}
+
+// 矩阵 7：Upsert 新增 Provider 出现在末尾；Delete 后 save→reload 剩余顺序不变。
+func TestProviderStoreUpsertNewAppendsAndDeletePreservesOrder(t *testing.T) {
+	dir := t.TempDir()
+	writeProvidersFile(t, dir, `
+[[providers]]
+id = "zeta"
+name = "Zeta"
+protocol = "doh"
+endpoint = "https://dns.zeta.example/dns-query"
+server_name = "dns.zeta.example"
+port = 443
+timeout_ms = 1000
+enabled = true
+tags = []
+
+[[providers]]
+id = "alpha"
+name = "Alpha"
+protocol = "doh"
+endpoint = "https://dns.alpha.example/dns-query"
+server_name = "dns.alpha.example"
+port = 443
+timeout_ms = 1000
+enabled = true
+tags = []
+`)
+
+	store, err := NewProviderStore(dir)
+	if err != nil {
+		t.Fatalf("NewProviderStore() error = %v", err)
+	}
+
+	// 新增 newone，应追加到末尾。
+	if err := store.Upsert(Provider{
+		ID:         "newone",
+		Name:       "New One",
+		Protocol:   ProtocolDoH,
+		Endpoint:   "https://dns.newone.example/dns-query",
+		ServerName: "dns.newone.example",
+		Port:       443,
+		Timeout:    1000,
+		Enabled:    true,
+		Tags:       []string{},
+	}); err != nil {
+		t.Fatalf("Upsert(new) error = %v", err)
+	}
+	got := providerIDs(store.List())
+	want := []string{"zeta", "alpha", "newone"}
+	if !equalStringSlice(got, want) {
+		t.Fatalf("after Upsert(new), List() order = %v, want %v (new appended at end)", got, want)
+	}
+
+	// 删除中间的 alpha，剩余顺序应保持 zeta → newone。
+	if err := store.Delete("alpha"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	// reload 验证持久化顺序，确认 save 按 order 写回而非按 ID 排序。
+	reloaded, err := NewProviderStore(dir)
+	if err != nil {
+		t.Fatalf("reload NewProviderStore() error = %v", err)
+	}
+	gotAfterReload := providerIDs(reloaded.List())
+	wantAfterReload := []string{"zeta", "newone"}
+	if !equalStringSlice(gotAfterReload, wantAfterReload) {
+		t.Fatalf("after Delete + reload, List() order = %v, want %v (order preserved, not ID-sorted)", gotAfterReload, wantAfterReload)
+	}
+}
+
+// 顺手发现不在本 issue 范围的覆盖（save 写回内容）已由现有 TestProviderStoreUpsertAndDeletePersistTOML 保证。

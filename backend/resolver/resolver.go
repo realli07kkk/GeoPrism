@@ -76,6 +76,9 @@ type QueryResult struct {
 // Resolver DNS 解析器
 type Resolver struct {
 	httpClient *http.Client
+	// queryFn 仅供内部测试注入；生产路径为 nil，回退到 Query。
+	// 非导出字段，不构成对外 API 契约。
+	queryFn func(endpoint, serverName string, port int, protocol string, query DNSQuery) (*DNSAnswer, error)
 }
 
 // NewResolver 创建新的解析器
@@ -90,6 +93,14 @@ func NewResolver() *Resolver {
 			},
 		},
 	}
+}
+
+// NewResolverWithQueryFunc 创建使用自定义查询函数的解析器，仅供测试注入。
+// queryFn 为 nil 时等价于 NewResolver（生产路径不应调用此构造函数）。
+func NewResolverWithQueryFunc(queryFn func(endpoint, serverName string, port int, protocol string, query DNSQuery) (*DNSAnswer, error)) *Resolver {
+	r := NewResolver()
+	r.queryFn = queryFn
+	return r
 }
 
 // getRecordTypeCode 将记录类型字符串转换为 DNS 类型码
@@ -372,58 +383,81 @@ func (r *Resolver) Query(endpoint, serverName string, port int, protocol string,
 	}
 }
 
-// QueryMulti 并行查询多个 Provider
+// QueryMulti 并行查询多个 Provider。
+//
+// 顺序契约：Answers[i] 严格对应 providers[i]，与 goroutine 完成顺序无关。
+// 成功、失败、空响应（answer == nil 且 err == nil）均占据原 index，不过滤、不挪位。
+// QueryMulti 不自行排序，只忠实保留传入 providers slice 的顺序。
 func (r *Resolver) QueryMulti(providers []ProviderInfo, query DNSQuery) QueryResult {
 	start := time.Now()
 	result := QueryResult{
 		Domain:     query.Domain,
 		RecordType: query.RecordType,
-		Answers:    make([]DNSAnswer, 0, len(providers)),
+		// 预分配完整长度，按 index 归位；不再 append，避免完成顺序泄漏到输出。
+		Answers: make([]DNSAnswer, len(providers)),
 	}
 
-	// 使用 goroutine 并行查询
+	// 每个 Provider 在原 slice 中的位置即其结果在 Answers 中的位置。
 	type resultChan struct {
-		providerID string
-		answer     *DNSAnswer
-		err        error
+		index  int
+		answer *DNSAnswer
+		err    error
 	}
 
 	ch := make(chan resultChan, len(providers))
 
-	for _, p := range providers {
-		go func(p ProviderInfo) {
-			answer, err := r.Query(p.Endpoint, p.ServerName, p.Port, p.Protocol, DNSQuery{
+	for i, p := range providers {
+		go func(i int, p ProviderInfo) {
+			// queryFn 仅供内部测试注入；生产路径走真实 Query。
+			queryFunc := r.Query
+			if r.queryFn != nil {
+				queryFunc = r.queryFn
+			}
+			answer, err := queryFunc(p.Endpoint, p.ServerName, p.Port, p.Protocol, DNSQuery{
 				Domain:     query.Domain,
 				RecordType: query.RecordType,
 				ProviderID: p.ID,
 				Timeout:    query.Timeout,
 			})
-			if err != nil {
-				ch <- resultChan{providerID: p.ID, err: err}
-			} else {
+			if err == nil && answer != nil {
 				answer.ProviderID = p.ID
-				ch <- resultChan{providerID: p.ID, answer: answer}
 			}
-		}(p)
+			ch <- resultChan{index: i, answer: answer, err: err}
+		}(i, p)
 	}
 
-	// 收集结果
+	// 收集结果：按 index 归位，成功 / 失败 / 空响应统一处理。
 	for i := 0; i < len(providers); i++ {
 		res := <-ch
-		if res.err != nil {
-			result.Answers = append(result.Answers, DNSAnswer{
-				ProviderID: res.providerID,
-				Success:    false,
-				Error:      res.err.Error(),
-				RCodeName:  "ERROR",
-			})
-		} else if res.answer != nil {
-			result.Answers = append(result.Answers, *res.answer)
-		}
+		result.Answers[res.index] = normalizeAnswer(providers[res.index].ID, res.answer, res.err)
 	}
 
 	result.TotalTime = time.Since(start).Milliseconds()
 	return result
+}
+
+// normalizeAnswer 将单次查询结果归一化为 DNSAnswer。
+// 成功：返回原 answer；失败 / 空响应：返回占位错误结果。
+// 抽出为独立函数便于单测覆盖 nil-answer 与 error 分支，无需驱动真实网络。
+func normalizeAnswer(providerID string, answer *DNSAnswer, err error) DNSAnswer {
+	if err != nil {
+		return DNSAnswer{
+			ProviderID: providerID,
+			Success:    false,
+			Error:      err.Error(),
+			RCodeName:  "ERROR",
+		}
+	}
+	if answer != nil {
+		return *answer
+	}
+	// 空响应：err == nil 且 answer == nil，按实现约束补占位错误结果，保留原 index。
+	return DNSAnswer{
+		ProviderID: providerID,
+		Success:    false,
+		Error:      "查询返回空响应",
+		RCodeName:  "ERROR",
+	}
 }
 
 // TestConnection 测试 Provider 连接

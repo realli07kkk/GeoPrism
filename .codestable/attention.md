@@ -12,6 +12,8 @@
 
 ### 测试
 
+- 改 Go 代码后必须跑全 `go vet ./...` + `gofmt -l` + `git diff --check` 三件套；任一不过不准合并（issue 2026-06-20-nondeterministic-result-order 的 CR-001 就是只跑了 `go test` 漏掉 `go vet` 导致 copylocks 进主干）
+
 ### 命令与脚本陷阱
 
 ### 路径与目录约定

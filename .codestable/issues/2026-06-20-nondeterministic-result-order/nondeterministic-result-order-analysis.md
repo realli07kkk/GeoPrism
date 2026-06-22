@@ -101,6 +101,8 @@ tags: [json, resolver, provider, determinism, output-protocol]
 - `Delete` → map 与 `order` 同时删除。
 - `save` 按 `order` 写回，**移除按 ID 排序**。
 
+**升级语义（兼容性承诺，fix 阶段必须遵守）**：A 只能从升级那一刻起对**新发生的 load / save** 保序，**无法恢复**已经被旧版本 `save` 按 ID 排序覆盖掉的历史原始顺序。即：用户首次升级后的 `providers.toml`，其 `order` 取自"当前磁盘文件里 `[[providers]]` 的物理排列"（很可能已经是 ID 字典序），而非用户最初声明的顺序。"升级后变为声明顺序"应理解为**新的持久化契约**——从这一刻起不再二次重排——而不是自动复原历史顺序。迁移策略上不回填、不猜测，按现状锁定即可。
+
 ## 顺序语义矩阵（对外契约）
 
 | 调用方式 | Provider 顺序 |
@@ -117,6 +119,12 @@ tags: [json, resolver, provider, determinism, output-protocol]
 ## 测试矩阵（fix 阶段，避开真实网络）
 
 通过注入可控的 `Query` / mock resolver 让 Provider **逆序完成**来验证保序，而非"多跑几次看着没乱"。断言只比较 `provider_id` / `provider_name` 序列，不比较整段 JSON（`rtt_ms` / `total_time_ms` 会变）。
+
+**注入约束（fix 阶段必须解决）**：当前 `Resolver` 没有可替换的 `Query` hook——`QueryMulti` 在 `backend/resolver/resolver.go:395` 直接调用 `r.Query(...)` 具体方法，外部测试无法插入"带延迟的 mock"。`WaitGroup` + 直接写 `result[i]` 的并发写模式在本项目已有先例（`internal/cli/ns_info.go:371 queryNSIPs`），但本次 fix 采用方案 A 不切换同步模型。为满足测试矩阵第 1-3 条，fix 阶段二选一：
+- **优先**：给 `Resolver` 增加一个**仅供内部注入**的 query function 字段（如 `queryFn func(...) (...)`），生产路径默认为 nil → 回退到现有 `r.Query`；测试设为可控延迟函数。改动局部、不破坏 userspace。
+- **次选**：通过自定义 `http.RoundTripper` 返回带延迟的 DoH 响应驱动真实 `QueryDoH`，但**只能覆盖 DoH 协议**且无法表达 `nil` answer（需走 hook）。
+
+nil-answer 用例（第 3 条）必须走 query hook 路径——RoundTripper 方案表达不了"返回 nil 且无 err"。若抽出一个**纯粹的结果归一化 helper**（把 `[]resultChan` 按 index 归位为 `[]DNSAnswer`）则该 helper 可独立单测覆盖第 1-3 条，是最干净的解耦点。
 
 1. `QueryMulti` 输入 A、B、C，完成顺序 C、B、A → 输出仍为 A、B、C。
 2. 中间 Provider 失败 → 错误结果仍落在原 index。
