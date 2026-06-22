@@ -13,8 +13,8 @@ items:
   - slug: ipdb-v2-base-build
     description: 实现未激活的 v2 builder（首版即同 batch 双写 primary+cidr）+ v2 BaseStore 的 ReadOnly 打开；允许不同 prefix 重叠、相同 prefix 严格拒绝；staging 构建后 rename
     depends_on: [ipdb-v2-schema]
-    status: planned
-    feature: null
+    status: done
+    feature: 2026-06-22-ipdb-v2-base-build
     minimal_loop: false
     notes: 用内部入口 buildV2FromCSV/openBaseV2，不切换公开 BuildFromCSV/OpenCurrentBase/currentFormatVersion，避免"能构建不能查询"窗口
 

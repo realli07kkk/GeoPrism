@@ -7,13 +7,19 @@ const (
 	keyFamilyIPv4 byte = 0x04
 	keyFamilyIPv6 byte = 0x06
 
-	currentFormatVersion    byte = 1
+	currentFormatVersion byte = 1
+	// formatVersionV2 是 v2 base 库的库级 FormatVersion。仅 v2 builder 写入；
+	// currentFormatVersion 保持 1 不动，公开入口在 ipdb-v2-query 收口前零变化。
+	formatVersionV2         byte = 2
 	defaultPebbleModulePath      = "github.com/cockroachdb/pebble/v2"
 	defaultPebbleVersion         = "unknown"
 	metadataKeyName              = "meta"
 	currentFileName              = "CURRENT"
 	versionsDirName              = "versions"
 	dbDirName                    = "db"
+	// stagingDirPrefix 是 v2 构建中间目录前缀：versions/.staging-{buildID}；
+	// 关库后 rename 为正式目录 versions/{buildID} 再切 CURRENT。
+	stagingDirPrefix = ".staging-"
 )
 
 // v2 key 首字节（kind），区分索引类型；与 v1 的 keyFamily* 前缀语义区分。

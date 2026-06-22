@@ -314,9 +314,9 @@ overlay 独立元数据：OverlayMetadata{ FormatVersion=1, CreatedAt }
 2. **ipdb-v2-base-build** — 实现**未激活**的 v2 builder（首版即同 batch 双写 primary+cidr）+ v2 `BaseStore` 的 ReadOnly 打开；允许不同 prefix 重叠、相同 prefix 严格拒绝（`ErrDuplicatePrefix`）；staging 构建后 rename；**不切换公开 `BuildFromCSV` / `OpenCurrentBase` / `currentFormatVersion`**
    - 所属模块：模块 B · base 存储
    - 依赖：ipdb-v2-schema
-   - 状态：planned
-   - 对应 feature：未启动
-   - 备注：内部入口 `buildV2FromCSV` / `openBaseV2`；公开入口仍指向 v1，避免"能构建不能查询"的窗口
+   - 状态：done
+   - 对应 feature：2026-06-22-ipdb-v2-base-build
+   - 备注：内部入口 `buildV2FromCSV` / `openBaseV2(rootDir, buildID)`；公开入口仍指向 v1，避免"能构建不能查询"的窗口
 
 3. **ipdb-v2-query** — `BaseStore.LookupIP` 真 LPM ladder + `LookupCIDR` 三段（ancestors+self+descendants）查询 + property test；**收口处原子切换公开 builder/open/query 到 v2、`currentFormatVersion=2`**；v1 → `ErrLegacyFormat`、缺 capability → `ErrIncompleteSchema`
    - 所属模块：模块 B · base 存储

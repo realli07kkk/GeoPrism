@@ -1,0 +1,159 @@
+feature: 2026-06-22-ipdb-v2-base-build
+created: 2026-06-22
+
+steps:
+  - action: "常量与错误类型：types.go 新增 formatVersionV2 byte = 2（库级版本，currentFormatVersion 保持 1 不动）+ 可选 staging 目录前缀常量；定义 ErrDuplicatePrefix（置于 builder_v2.go 或 store_v2.go）"
+    exit_signal: "go build ./... 通过；grep 确认 currentFormatVersion 仍为 byte = 1；go test ./backend/ipdb/... 全绿（v1 回归）"
+    status: done
+
+  - action: "v2 builder 核心（builder_v2.go）：buildV2FromCSV 复用 v1 CSV 解析/表头校验/family 统计，同一 batch 双写 primary(encodePrimaryKeyV2→encodeBaseRecordValueV2) + cidr(encodeCIDRKeyV2→零长度 value)；duplicate-prefix reject（比较完整 prefix=primary key，含首次/重复行号）；删除 v1 overlap reject；保留乱序 reject；写 meta(FormatVersion=formatVersionV2, SchemaFeatures=PrimaryLPM|CIDRStartIdx)；commitSize 改可注入。先直写 versions/{buildID}/db 跑通主路径"
+    exit_signal: "临时测试调 buildV2FromCSV 后直接扫 Pebble：primaryCount==cidrCount==RowCount；不同 prefix 重叠构建成功；相同 prefix 返回 ErrDuplicatePrefix；注入极小 commitSize 时双索引计数仍相等（行边界=batch 边界不拆双写）"
+    status: done
+
+  - action: "staging 原子化：构建目标改 versions/.staging-{buildID}/db，关库 Flush 后 rename 到 versions/{buildID}/db，再 writeCurrentVersion 切 CURRENT；所有错误路径清理 .staging-{buildID}；cleanupOldVersions 兼顾遗留 staging 兜底"
+    exit_signal: "构建中存在 .staging-{buildID}、成功后只剩 {buildID} 且 CURRENT 指向它；失败路径下 versions/{buildID} 与 CURRENT 均不存在、且本次构建已清理 staging"
+    status: done
+
+  - action: "BaseStore + openBaseV2（store_v2.go）：定义 BaseStore{rootDir,buildID,dbDirPath,db,metadata}；openBaseV2(rootDir, buildID) 拼 rootDir/versions/{buildID}/db 后用 pebble.Options{ReadOnly:true, Logger:silentLogger{}} 打开 + 读 metadata + sanity 校验 FormatVersion==2（不符返回 fmt.Errorf 非 sentinel）；提供 Metadata() / Close()；不实现 LookupIP/LookupCIDR"
+    exit_signal: "openBaseV2 打开 step3 产出库读出 FormatVersion=2 + SchemaFeatures=PrimaryLPM|CIDRStartIdx；对句柄 db.Set 写入失败（ReadOnly 生效）；Close 幂等"
+    status: done
+
+  - action: "测试收口（builder_v2_test.go / store_v2_test.go 或合并）：补齐 roadmap §7 base-build 验收矩阵（第 3 节全部场景）；跑质量三件套 + go test"
+    exit_signal: "第 3 节 1-22 全部验收场景有可观察证据；go vet ./... + gofmt -l + git diff --check + go test ./backend/ipdb/... 全绿"
+    status: done
+
+checks:
+  # 名词契约（来源：第 2.1 节）
+  - item: "buildV2FromCSV(rootDir, BuildOptions) (Metadata, error) 为内部入口，非生产调用方接入"
+    source: 名词契约
+    status: passed
+  - item: "BaseStore 结构含 rootDir/buildID/dbDirPath/db(ReadOnly)/metadata；只暴露 Metadata()/Close()，无任何写方法、无 LookupIP/LookupCIDR"
+    source: 名词契约
+    status: passed
+  - item: "openBaseV2(rootDir, buildID string) (*BaseStore, error) 拼 rootDir/versions/{buildID}/db 打开（不读 CURRENT）；读 CURRENT 的 OpenCurrentBase 留给 query，且 query 复用时 BaseStore 已含 rootDir/buildID 无需补状态"
+    source: 名词契约
+    status: passed
+  - item: "formatVersionV2 byte = 2 为库级版本常量，与 value 协议版本 baseValueVersionV2 正交、与 currentFormatVersion 区分"
+    source: 名词契约
+    status: passed
+  - item: "ErrDuplicatePrefix 为 sentinel error；错误信息含规范 prefix + 首次行号 + 重复行号"
+    source: 名词契约
+    status: passed
+
+  # 编排骨架 / 流程级约束（来源：第 2.2 节）
+  - item: "双索引原子性：primary 与 cidr 写入同一个 batch；同一行的两个 Set 不跨 batch 边界拆开；构建不变量 primaryCount==cidrCount==RowCount"
+    source: 流程级约束
+    status: passed
+  - item: "cidr key 的 value 为零长度（canonical value 只在 primary）；decision ipdb-cidr-index-empty-value"
+    source: 流程级约束
+    status: passed
+  - item: "staging 原子性：任何错误路径不得留下 versions/{buildID}/db 与 CURRENT 指向；.staging-{buildID} 失败时由本次构建清理"
+    source: 流程级约束
+    status: passed
+  - item: "CURRENT 切换在关库 + rename 之后，保证 CURRENT 永远指向已 Flush 关闭的完整目录"
+    source: 流程级约束
+    status: passed
+  - item: "duplicate 判定：同 family 内 Masked 后完全相同 prefix=重复；相同起始地址+不同 prefixLen 合法；不同 prefix 重叠合法（删除 v1 overlap reject）"
+    source: 流程级约束
+    status: passed
+  - item: "base ReadOnly：openBaseV2 用 pebble.Options{ReadOnly:true}；BaseStore 无写方法（decision ipdb-base-readonly-writeback-to-overlay）"
+    source: 流程级约束
+    status: passed
+  - item: "保留每个 family 内起始地址非递减输入契约（乱序 reject）；但它不再是查询正确性前提"
+    source: 流程级约束
+    status: passed
+  - item: "family 统计：IPv4Count/IPv6Count 按记录数；RowCount=IPv4Count+IPv6Count=primaryCount=cidrCount"
+    source: 流程级约束
+    status: passed
+
+  # 挂载点（来源：第 2.3 节）
+  - item: "本 feature 不引入用户/系统可见挂载点：buildV2FromCSV/openBaseV2/BaseStore 无生产调用方（仅测试），公开路径全程走 v1"
+    source: 挂载点
+    status: passed
+
+  # 范围守护（来源：第 1 节"明确不做"）
+  - item: "不切换公开 BuildFromCSV/OpenCurrent；git diff backend/ipdb/builder.go backend/ipdb/store.go 为空；公开签名零 diff"
+    source: 范围守护
+    status: passed
+  - item: "不改 currentFormatVersion（仍 byte = 1，留给 ipdb-v2-query 收口）"
+    source: 范围守护
+    status: passed
+  - item: "不实现 BaseStore.LookupIP/LookupCIDR（真查询归 ipdb-v2-query）；grep 确认无这两方法"
+    source: 范围守护
+    status: passed
+  - item: "不定义/使用 ErrLegacyFormat/ErrIncompleteSchema/ErrCorruptIndex（capability 拒绝/v1 提示/索引完整性归后续 feature）"
+    source: 范围守护
+    status: passed
+  - item: "不碰 internal/cli/*；git diff internal/ 为空（无生产调用方接入 v2）"
+    source: 范围守护
+    status: passed
+  - item: "不删 v1 WriteRecord（公开入口未切换前删除会断 cli，归 ipdb-lookup-integration）"
+    source: 范围守护
+    status: passed
+
+  # 验收场景（来源：第 3 节）
+  - item: "正常：buildV2FromCSV 产出 Metadata{FormatVersion:2, RowCount:N, IPv4+IPv6==N, SchemaFeatures==PrimaryLPM|CIDRStartIdx}"
+    source: 验收场景
+    status: passed
+  - item: "正常：扫 Pebble primary kind(0x14/0x16) 数==cidr kind(0x24/0x26) 数==RowCount；每个 cidr value 长度为 0"
+    source: 验收场景
+    status: passed
+  - item: "正常：primary↔cidr 同源——decodeCIDRKeyV2 与 decodePrimaryKeyV2 还原同一 Prefix；primary value 经 decodeBaseRecordValueV2 得正确业务字段（Network 空）"
+    source: 验收场景
+    status: passed
+  - item: "正常：接受单 IP 行（1.7.168.172→/32、2001:db8::1→/128），family 统计正确"
+    source: 验收场景
+    status: passed
+  - item: "正常：openBaseV2 打开产出库 Metadata() 返回 FormatVersion=2 + 正确 SchemaFeatures；Close 幂等（二次 Close 不 panic）"
+    source: 验收场景
+    status: passed
+  - item: "正常（C）：注入极小 commitSize（如 2），commit 切点落行边界 → primaryCount==cidrCount==RowCount 仍成立（双写不跨 batch 拆开）"
+    source: 验收场景
+    status: passed
+  - item: "边界：不同 prefix 重叠 10.0.0.0/8+10.0.0.0/16+10.1.0.0/16 → 构建成功（3 primary + 3 cidr，验证删除 overlap reject）"
+    source: 验收场景
+    status: passed
+  - item: "边界：相同起始地址不同 prefixLen（10.0.0.0/8+10.0.0.0/16）→ 不判重复，成功"
+    source: 验收场景
+    status: passed
+  - item: "边界：/0、/32、/128 prefix 正常 encode 入库"
+    source: 验收场景
+    status: passed
+  - item: "错误：完全相同 prefix → ErrDuplicatePrefix（含规范 prefix + 首次/重复行号）；versions/{buildID} 与 CURRENT 不存在"
+    source: 验收场景
+    status: passed
+  - item: "错误：同 family 乱序起始地址 → 乱序错误；不留正式目录/CURRENT"
+    source: 验收场景
+    status: passed
+  - item: "错误：CSV 表头不符 / network 带 host bits / 相对路径 CSVPath → 各自明确 error（复用 v1 校验）"
+    source: 验收场景
+    status: passed
+  - item: "错误（A）：CSV 含 IPv4-mapped IPv6（::ffff:10.0.0.0/112）→ v2 encode 拒绝向上传播，构建失败、不留目录/CURRENT（不静默跳过）"
+    source: 验收场景
+    status: passed
+  - item: "错误（B）：构建注入失败后本次构建清理 .staging-{buildID}，versions/{buildID} 与 CURRENT 不存在；兜底清理仅限 crash 场景"
+    source: 验收场景
+    status: passed
+  - item: "错误：openBaseV2 句柄 db.Set → 返回 error（base 运行期只读）"
+    source: 验收场景
+    status: passed
+  - item: "错误（D）：openBaseV2 打开空 Pebble 目录（无 metadata key）→ fmt.Errorf 错误，不 panic"
+    source: 验收场景
+    status: passed
+  - item: "错误（D）：openBaseV2 打开 v1 格式目录（FormatVersion!=2）→ fmt.Errorf sanity 错误，不 panic、非 sentinel"
+    source: 验收场景
+    status: passed
+
+  # 质量门（来源：attention.md 项目硬约束 + 第 3 节质量门）
+  - item: "go vet ./... 通过（CR-001 教训：copylocks 漏过主干）"
+    source: 流程级约束
+    status: passed
+  - item: "gofmt -l 输出为空"
+    source: 流程级约束
+    status: passed
+  - item: "git diff --check 无空白错误"
+    source: 流程级约束
+    status: passed
+  - item: "go test ./backend/ipdb/... 全绿（含 v1 回归）"
+    source: 流程级约束
+    status: passed
