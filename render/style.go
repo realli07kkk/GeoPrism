@@ -10,11 +10,11 @@ import (
 
 // 语义化颜色定义，自动适配亮色/暗色终端
 var (
-	ColorSuccess = lipgloss.AdaptiveColor{Light: "2", Dark: "10"}  // 绿色
-	ColorError   = lipgloss.AdaptiveColor{Light: "1", Dark: "9"}   // 红色
-	ColorTitle   = lipgloss.AdaptiveColor{Light: "4", Dark: "12"}  // 蓝色
-	ColorMuted   = lipgloss.AdaptiveColor{Light: "8", Dark: "8"}   // 灰色
-	ColorAccent  = lipgloss.AdaptiveColor{Light: "6", Dark: "14"}  // 青色
+	ColorSuccess = lipgloss.AdaptiveColor{Light: "2", Dark: "10"} // 绿色
+	ColorError   = lipgloss.AdaptiveColor{Light: "1", Dark: "9"}  // 红色
+	ColorTitle   = lipgloss.AdaptiveColor{Light: "4", Dark: "12"} // 蓝色
+	ColorMuted   = lipgloss.AdaptiveColor{Light: "8", Dark: "8"}  // 灰色
+	ColorAccent  = lipgloss.AdaptiveColor{Light: "6", Dark: "14"} // 青色
 )
 
 // 公共样式

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/pebble/v2"
 )
@@ -585,6 +586,35 @@ func TestOpenCurrentProbeDBReleased(t *testing.T) {
 		t.Fatalf("store.Close 后读写打开应成功，error = %v", err)
 	}
 	rwDB2.Close()
+}
+
+func TestOpenCurrentErrorReleasesVersionsLock(t *testing.T) {
+	rootDir := buildV2FixtureCSV(t, "oc-lock-error", strings.Join([]string{
+		strings.Join(expectedCSVHeader, ","),
+		`10.0.0.0/24,P,P,P,P,AS1,AS,as.example`,
+	}, "\n"))
+	writeStoreMetadata(t, rootDir, "oc-lock-error", Metadata{FormatVersion: 1})
+
+	if _, err := OpenCurrent(rootDir); !errors.Is(err, ErrLegacyFormat) {
+		t.Fatalf("OpenCurrent() error=%v, want ErrLegacyFormat", err)
+	}
+
+	acquired := make(chan error, 1)
+	go func() {
+		lock, err := acquireFileLock(filepath.Join(rootDir, versionsLockFileName), true)
+		if err == nil {
+			err = lock.Close()
+		}
+		acquired <- err
+	}()
+	select {
+	case err := <-acquired:
+		if err != nil {
+			t.Fatalf("错误路径后获取独占生命周期锁失败: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OpenCurrent 错误路径泄漏了生命周期共享锁")
+	}
 }
 
 // TestStoreWriteRecordFails 验证 finding 3：WriteRecord 显式返回失败，不依赖 s.db。

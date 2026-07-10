@@ -37,6 +37,26 @@ type Store struct {
 // 必须在调用 openBaseV2 之前彻底关闭（openBaseV2 会二次打开同目录）。所有错误分支
 // （含 ErrLegacyFormat/ErrIncompleteSchema/普通错误）都关 probe DB 再返回。
 func OpenCurrent(rootDir string) (*Store, error) {
+	if _, err := os.Stat(rootDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNoCurrentDatabase
+		}
+		return nil, fmt.Errorf("检查离线库根目录失败: %w", err)
+	}
+
+	// reader 在读取 CURRENT 前获取共享生命周期锁，并一直持有到 Store.Close。
+	// builder 的发布/回收使用同一锁的独占模式，因此 CURRENT 对应目录在 reader
+	// 完成打开及后续查询之前不会被切换后删除。
+	versionsLock, err := acquireFileLock(filepath.Join(rootDir, versionsLockFileName), false)
+	if err != nil {
+		return nil, fmt.Errorf("获取 IPDB 版本生命周期锁失败: %w", err)
+	}
+	defer func() {
+		if versionsLock != nil {
+			_ = versionsLock.Close()
+		}
+	}()
+
 	currentPath := filepath.Join(rootDir, currentFileName)
 	currentData, err := os.ReadFile(currentPath)
 	if err != nil {
@@ -110,11 +130,16 @@ func OpenCurrent(rootDir string) (*Store, error) {
 		return nil, err
 	}
 
-	return &Store{
+	// 生命周期锁归真正持有 Pebble 句柄的 BaseStore 所有，确保后续移除 Store 过渡壳时
+	// reader lease 不会随壳层丢失。
+	base.versionsLock = versionsLock
+	store := &Store{
 		base:    base,
 		rootDir: rootDir,
 		buildID: buildID,
-	}, nil
+	}
+	versionsLock = nil
+	return store, nil
 }
 
 // LookupIP 转调 v2 BaseStore 真 LPM ladder。签名与 v1 零 diff。

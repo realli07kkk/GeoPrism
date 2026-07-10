@@ -20,8 +20,11 @@ const (
 	currentFileName              = "CURRENT"
 	versionsDirName              = "versions"
 	dbDirName                    = "db"
-	// stagingDirPrefix 是 v2 构建中间目录前缀：versions/.staging-{buildID}；
-	// 关库后 rename 为正式目录 versions/{buildID} 再切 CURRENT。
+	buildLockFileName            = "BUILD.lock"
+	versionsLockFileName         = "VERSIONS.lock"
+	// stagingDirPrefix 是 v2 构建中间目录前缀：每次构建都在 versions/ 下创建
+	// 独立的 .staging-{buildID}-{random} 目录，关库后 rename 为正式目录
+	// versions/{buildID} 再切 CURRENT，避免并发构建互相删除 staging。
 	stagingDirPrefix = ".staging-"
 )
 

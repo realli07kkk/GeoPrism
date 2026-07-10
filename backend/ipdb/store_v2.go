@@ -27,11 +27,12 @@ var (
 // rootDir/buildID 是 base 库的版本定位上下文，供 OpenCurrent（过渡壳）确认 v2 后
 // 经 openBaseV2 复用时展示版本 / 拼路径 / 输出重建提示。
 type BaseStore struct {
-	rootDir   string
-	buildID   string
-	dbDirPath string
-	db        *pebble.DB
-	metadata  Metadata
+	rootDir      string
+	buildID      string
+	dbDirPath    string
+	db           *pebble.DB
+	metadata     Metadata
+	versionsLock *fileLock
 }
 
 // openBaseV2 以 ReadOnly 方式打开 rootDir 下 buildID 版本的 v2 base 库并读出 metadata
@@ -95,12 +96,24 @@ func (s *BaseStore) Metadata() Metadata {
 
 // Close 关闭 base 库（幂等）。
 func (s *BaseStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
+
+	var closeErrs []error
 	db := s.db
 	s.db = nil
-	return db.Close()
+	if db != nil {
+		closeErrs = append(closeErrs, db.Close())
+	}
+	// 必须先关闭 Pebble，再释放共享生命周期锁；否则 builder 可能在 DB 仍使用
+	// 旧版本文件时获得独占锁并删除该版本。
+	versionsLock := s.versionsLock
+	s.versionsLock = nil
+	if versionsLock != nil {
+		closeErrs = append(closeErrs, versionsLock.Close())
+	}
+	return errors.Join(closeErrs...)
 }
 
 // LookupIP 对单 IP 做真正的最长前缀匹配（LPM ladder）：

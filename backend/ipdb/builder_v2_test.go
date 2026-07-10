@@ -1,12 +1,17 @@
 package ipdb
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/pebble/v2"
 )
@@ -168,9 +173,7 @@ func TestBuildV2StagingSuccess(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(versionsDir, "ok-build", dbDirName)); err != nil {
 		t.Fatalf("正式目录缺失: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(versionsDir, stagingDirPrefix+"ok-build")); !os.IsNotExist(err) {
-		t.Fatalf("staging 目录应已 rename 消失，statErr = %v", err)
-	}
+	assertNoStagingDirs(t, versionsDir)
 	cur, err := os.ReadFile(filepath.Join(rootDir, currentFileName))
 	if err != nil || string(cur) != "ok-build" {
 		t.Fatalf("CURRENT = %q (err=%v), want ok-build", string(cur), err)
@@ -194,11 +197,488 @@ func TestBuildV2StagingCleanupOnFailure(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(versionsDir, "fail-build")); !os.IsNotExist(err) {
 		t.Fatalf("失败构建不应留下正式目录，statErr = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(versionsDir, stagingDirPrefix+"fail-build")); !os.IsNotExist(err) {
-		t.Fatalf("失败构建不应残留 staging 目录，statErr = %v", err)
-	}
+	assertNoStagingDirs(t, versionsDir)
 	if _, err := os.Stat(filepath.Join(rootDir, currentFileName)); !os.IsNotExist(err) {
 		t.Fatalf("失败构建不应写 CURRENT，statErr = %v", err)
+	}
+}
+
+func TestConcurrentBuildsKeepCurrentTarget(t *testing.T) {
+	originalNow := buildIDNow
+	buildIDNow = func() time.Time {
+		return time.Date(2026, 7, 10, 1, 2, 3, 4, time.UTC)
+	}
+	t.Cleanup(func() { buildIDNow = originalNow })
+
+	rootDir := t.TempDir()
+	csvPath := writeCSVFixture(t, t.TempDir(), strings.Join([]string{
+		strings.Join(expectedCSVHeader, ","),
+		`1.0.0.0/24,A,A,A,A,,,`,
+		`1.0.1.0/24,B,B,B,B,,,`,
+	}, "\n"))
+
+	const buildCount = 6
+	start := make(chan struct{})
+	errs := make(chan error, buildCount)
+	var wg sync.WaitGroup
+
+	for i := 0; i < buildCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := BuildFromCSV(rootDir, BuildOptions{CSVPath: csvPath})
+			errs <- err
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("并发构建失败: %v", err)
+		}
+	}
+
+	currentData, err := os.ReadFile(filepath.Join(rootDir, currentFileName))
+	if err != nil {
+		t.Fatalf("读取 CURRENT 失败: %v", err)
+	}
+	currentBuildID := string(currentData)
+	if _, err := os.Stat(filepath.Join(rootDir, versionsDirName, currentBuildID, dbDirName)); err != nil {
+		t.Fatalf("CURRENT=%q 指向的数据库不存在: %v", currentBuildID, err)
+	}
+
+	// BUILD.lock 串行化发布与回收；并发调用全部成功后只保留 CURRENT 指向的版本。
+	versionsDir := filepath.Join(rootDir, versionsDirName)
+	assertOnlyVersion(t, versionsDir, currentBuildID)
+	assertNoStagingDirs(t, versionsDir)
+
+	store, err := OpenCurrent(rootDir)
+	if err != nil {
+		t.Fatalf("并发发布后 OpenCurrent() 失败: %v", err)
+	}
+	defer store.Close()
+	match, err := store.LookupIP("1.0.0.1")
+	if err != nil || !match.Matched {
+		t.Fatalf("并发发布后的当前库不可查询: match=%+v err=%v", match, err)
+	}
+}
+
+func TestConcurrentBuildsAcrossProcessesKeepCurrentTarget(t *testing.T) {
+	const helperEnv = "GEOPRISM_IPDB_BUILD_HELPER"
+	if os.Getenv(helperEnv) == "1" {
+		rootDir := os.Getenv("GEOPRISM_IPDB_ROOT")
+		csvPath := os.Getenv("GEOPRISM_IPDB_CSV")
+		processID := os.Getenv("GEOPRISM_IPDB_PROCESS_ID")
+		startFile := os.Getenv("GEOPRISM_IPDB_START_FILE")
+		readyDir := os.Getenv("GEOPRISM_IPDB_READY_DIR")
+		if err := os.WriteFile(filepath.Join(readyDir, processID), []byte("ready"), 0644); err != nil {
+			t.Fatalf("写入子进程 ready 标记失败: %v", err)
+		}
+
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, err := os.Stat(startFile); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				t.Fatalf("检查并发启动屏障失败: %v", err)
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("等待并发启动屏障超时")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		if _, err := BuildFromCSV(rootDir, BuildOptions{CSVPath: csvPath}); err != nil {
+			t.Fatalf("子进程构建 %s 失败: %v", processID, err)
+		}
+		return
+	}
+
+	rootDir := t.TempDir()
+	csvPath := writeCSVFixture(t, t.TempDir(), strings.Join([]string{
+		strings.Join(expectedCSVHeader, ","),
+		`1.0.0.0/24,A,A,A,A,,,`,
+		`1.0.1.0/24,B,B,B,B,,,`,
+	}, "\n"))
+	startFile := filepath.Join(rootDir, "start-builds")
+	readyDir := filepath.Join(rootDir, "ready")
+	if err := os.MkdirAll(readyDir, 0755); err != nil {
+		t.Fatalf("创建 ready 目录失败: %v", err)
+	}
+
+	type childProcess struct {
+		cmd    *exec.Cmd
+		output bytes.Buffer
+	}
+	const processCount = 4
+	children := make([]childProcess, processCount)
+	for i := 0; i < processCount; i++ {
+		processID := fmt.Sprintf("process-%d", i)
+		cmd := exec.Command(os.Args[0], "-test.run=^TestConcurrentBuildsAcrossProcessesKeepCurrentTarget$", "-test.count=1")
+		cmd.Env = append(os.Environ(),
+			helperEnv+"=1",
+			"GEOPRISM_IPDB_ROOT="+rootDir,
+			"GEOPRISM_IPDB_CSV="+csvPath,
+			"GEOPRISM_IPDB_PROCESS_ID="+processID,
+			"GEOPRISM_IPDB_START_FILE="+startFile,
+			"GEOPRISM_IPDB_READY_DIR="+readyDir,
+		)
+		children[i].cmd = cmd
+		cmd.Stdout = &children[i].output
+		cmd.Stderr = &children[i].output
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("启动构建子进程 %d 失败: %v", i, err)
+		}
+		child := &children[i]
+		t.Cleanup(func() {
+			if child.cmd.Process != nil && child.cmd.ProcessState == nil {
+				_ = child.cmd.Process.Kill()
+				_ = child.cmd.Wait()
+			}
+		})
+	}
+
+	readyDeadline := time.Now().Add(10 * time.Second)
+	for {
+		entries, err := os.ReadDir(readyDir)
+		if err != nil {
+			t.Fatalf("读取 ready 目录失败: %v", err)
+		}
+		if len(entries) == processCount {
+			break
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatalf("等待构建子进程就绪超时: ready=%d/%d", len(entries), processCount)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if err := os.WriteFile(startFile, []byte("start"), 0644); err != nil {
+		t.Fatalf("释放并发启动屏障失败: %v", err)
+	}
+	for i := range children {
+		if err := children[i].cmd.Wait(); err != nil {
+			t.Fatalf("构建子进程 %d 失败: %v\n%s", i, err, children[i].output.String())
+		}
+	}
+
+	currentData, err := os.ReadFile(filepath.Join(rootDir, currentFileName))
+	if err != nil {
+		t.Fatalf("读取 CURRENT 失败: %v", err)
+	}
+	currentBuildID := string(currentData)
+	versionsDir := filepath.Join(rootDir, versionsDirName)
+	assertOnlyVersion(t, versionsDir, currentBuildID)
+	assertNoStagingDirs(t, versionsDir)
+
+	store, err := OpenCurrent(rootDir)
+	if err != nil {
+		t.Fatalf("跨进程并发发布后 OpenCurrent() 失败: %v", err)
+	}
+	defer store.Close()
+	match, err := store.LookupIP("1.0.0.1")
+	if err != nil || !match.Matched {
+		t.Fatalf("跨进程并发发布后的当前库不可查询: match=%+v err=%v", match, err)
+	}
+}
+
+func TestDefaultBuildIDReallocatesExistingName(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 10, 1, 2, 3, 4, time.UTC)
+	originalNow := buildIDNow
+	buildIDNow = func() time.Time { return fixedNow }
+	t.Cleanup(func() { buildIDNow = originalNow })
+
+	rootDir := t.TempDir()
+	csvPath := writeCSVFixture(t, t.TempDir(), strings.Join([]string{
+		strings.Join(expectedCSVHeader, ","),
+		`1.0.0.0/24,A,A,A,A,,,`,
+	}, "\n"))
+	baseID := fixedNow.Format("20060102T150405.000000000")
+	if _, err := BuildFromCSV(rootDir, BuildOptions{CSVPath: csvPath, BuildID: baseID}); err != nil {
+		t.Fatalf("构造默认 ID 同名正式版本失败: %v", err)
+	}
+	if _, err := BuildFromCSV(rootDir, BuildOptions{CSVPath: csvPath}); err != nil {
+		t.Fatalf("空 BuildID 遇到同名正式版本后应重新分配: %v", err)
+	}
+
+	currentData, err := os.ReadFile(filepath.Join(rootDir, currentFileName))
+	if err != nil {
+		t.Fatalf("读取 CURRENT 失败: %v", err)
+	}
+	want := baseID + "-1"
+	if got := string(currentData); got != want {
+		t.Fatalf("CURRENT=%q, want %q", got, want)
+	}
+	assertOnlyVersion(t, filepath.Join(rootDir, versionsDirName), want)
+}
+
+func TestBuildLockReleasedAfterProcessExit(t *testing.T) {
+	const helperEnv = "GEOPRISM_IPDB_LOCK_HOLDER"
+	if os.Getenv(helperEnv) == "1" {
+		rootDir := os.Getenv("GEOPRISM_IPDB_ROOT")
+		readyFile := os.Getenv("GEOPRISM_IPDB_READY_FILE")
+		versionsDir := filepath.Join(rootDir, versionsDirName)
+		if err := os.MkdirAll(versionsDir, 0755); err != nil {
+			t.Fatalf("创建 helper versions 目录失败: %v", err)
+		}
+		lock, err := acquireFileLock(filepath.Join(rootDir, buildLockFileName), true)
+		if err != nil {
+			t.Fatalf("helper 获取 BUILD.lock 失败: %v", err)
+		}
+		defer lock.Close()
+		if err := os.MkdirAll(filepath.Join(versionsDir, stagingDirPrefix+"killed", dbDirName), 0755); err != nil {
+			t.Fatalf("helper 构造 crash staging 失败: %v", err)
+		}
+		if err := os.WriteFile(readyFile, []byte("ready"), 0644); err != nil {
+			t.Fatalf("helper 写 ready 标记失败: %v", err)
+		}
+		time.Sleep(time.Hour)
+		return
+	}
+
+	rootDir := t.TempDir()
+	readyFile := filepath.Join(rootDir, "lock-holder-ready")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestBuildLockReleasedAfterProcessExit$", "-test.count=1")
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	cmd.Env = append(os.Environ(),
+		helperEnv+"=1",
+		"GEOPRISM_IPDB_ROOT="+rootDir,
+		"GEOPRISM_IPDB_READY_FILE="+readyFile,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("启动 lock holder 失败: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil && cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(readyFile); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("检查 lock holder ready 标记失败: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等待 lock holder 就绪超时\n%s", output.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("终止 lock holder 失败: %v", err)
+	}
+	_ = cmd.Wait()
+
+	csvPath := writeCSVFixture(t, t.TempDir(), strings.Join([]string{
+		strings.Join(expectedCSVHeader, ","),
+		`1.0.0.0/24,A,A,A,A,,,`,
+	}, "\n"))
+	if _, err := buildV2FromCSV(rootDir, BuildOptions{CSVPath: csvPath, BuildID: "after-kill"}); err != nil {
+		t.Fatalf("持锁进程退出后的构建失败: %v", err)
+	}
+	versionsDir := filepath.Join(rootDir, versionsDirName)
+	assertOnlyVersion(t, versionsDir, "after-kill")
+	assertNoStagingDirs(t, versionsDir)
+}
+
+func TestBuildV2RetentionAndCrashStagingRecovery(t *testing.T) {
+	rootDir := t.TempDir()
+	csvPath := writeCSVFixture(t, t.TempDir(), strings.Join([]string{
+		strings.Join(expectedCSVHeader, ","),
+		`1.0.0.0/24,A,A,A,A,,,`,
+	}, "\n"))
+
+	if _, err := buildV2FromCSV(rootDir, BuildOptions{CSVPath: csvPath, BuildID: "first"}); err != nil {
+		t.Fatalf("首次构建失败: %v", err)
+	}
+	crashStaging := filepath.Join(rootDir, versionsDirName, stagingDirPrefix+"crashed", dbDirName)
+	if err := os.MkdirAll(crashStaging, 0755); err != nil {
+		t.Fatalf("构造 crash staging 失败: %v", err)
+	}
+
+	if _, err := buildV2FromCSV(rootDir, BuildOptions{CSVPath: csvPath, BuildID: "second"}); err != nil {
+		t.Fatalf("第二次构建失败: %v", err)
+	}
+
+	versionsDir := filepath.Join(rootDir, versionsDirName)
+	assertOnlyVersion(t, versionsDir, "second")
+	assertNoStagingDirs(t, versionsDir)
+	if _, err := os.Stat(filepath.Join(versionsDir, "first")); !os.IsNotExist(err) {
+		t.Fatalf("旧正式版本应被回收，statErr=%v", err)
+	}
+}
+
+func TestCrashStagingCleanupPreservesCurrentWithReservedPrefix(t *testing.T) {
+	rootDir := t.TempDir()
+	validCSV := writeCSVFixture(t, t.TempDir(), strings.Join([]string{
+		strings.Join(expectedCSVHeader, ","),
+		`1.0.0.0/24,A,A,A,A,,,`,
+	}, "\n"))
+	if _, err := buildV2FromCSV(rootDir, BuildOptions{
+		CSVPath: validCSV,
+		BuildID: stagingDirPrefix + "prod",
+	}); err != nil {
+		t.Fatalf("构建保留前缀正式版本失败: %v", err)
+	}
+
+	invalidCSV := writeCSVFixture(t, t.TempDir(), strings.Join([]string{
+		strings.Join(expectedCSVHeader, ","),
+		`10.0.0.1/24,B,B,B,B,,,`,
+	}, "\n"))
+	if _, err := buildV2FromCSV(rootDir, BuildOptions{
+		CSVPath: invalidCSV,
+		BuildID: "expected-failure",
+	}); err == nil {
+		t.Fatal("后续非法构建应失败")
+	}
+
+	currentData, err := os.ReadFile(filepath.Join(rootDir, currentFileName))
+	if err != nil || string(currentData) != stagingDirPrefix+"prod" {
+		t.Fatalf("失败构建后 CURRENT=%q err=%v", string(currentData), err)
+	}
+	store, err := OpenCurrent(rootDir)
+	if err != nil {
+		t.Fatalf("失败构建后当前正式版本不可打开: %v", err)
+	}
+	defer store.Close()
+	match, err := store.LookupIP("1.0.0.1")
+	if err != nil || !match.Matched {
+		t.Fatalf("失败构建后当前正式版本不可查询: match=%+v err=%v", match, err)
+	}
+}
+
+func TestCleanupWaitsForCurrentReader(t *testing.T) {
+	rootDir := t.TempDir()
+	csvPath := writeCSVFixture(t, t.TempDir(), strings.Join([]string{
+		strings.Join(expectedCSVHeader, ","),
+		`1.0.0.0/24,A,A,A,A,,,`,
+	}, "\n"))
+	if _, err := buildV2FromCSV(rootDir, BuildOptions{CSVPath: csvPath, BuildID: "reader-old"}); err != nil {
+		t.Fatalf("构建 reader-old 失败: %v", err)
+	}
+
+	store, err := OpenCurrent(rootDir)
+	if err != nil {
+		t.Fatalf("OpenCurrent() 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	versionsDir := filepath.Join(rootDir, versionsDirName)
+	buildDone := make(chan error, 1)
+	go func() {
+		_, err := buildV2FromCSV(rootDir, BuildOptions{CSVPath: csvPath, BuildID: "reader-new"})
+		buildDone <- err
+	}()
+
+	// 等到第二次构建已写完并关闭 staging DB。此时它只能阻塞在 VERSIONS.lock
+	// 独占获取上，尚不能切换 CURRENT 或清理 reader-old。
+	waitForClosedStagingDB(t, versionsDir, buildDone)
+
+	select {
+	case err := <-buildDone:
+		t.Fatalf("reader 未关闭时第二次构建不应完成，err=%v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	currentData, err := os.ReadFile(filepath.Join(rootDir, currentFileName))
+	if err != nil || string(currentData) != "reader-old" {
+		t.Fatalf("reader 存活期间 CURRENT=%q err=%v, want reader-old", string(currentData), err)
+	}
+
+	match, err := store.LookupIP("1.0.0.1")
+	if err != nil || !match.Matched {
+		t.Fatalf("等待清理期间旧 reader 应保持可查询: match=%+v err=%v", match, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("关闭旧 reader 失败: %v", err)
+	}
+
+	select {
+	case err := <-buildDone:
+		if err != nil {
+			t.Fatalf("reader 关闭后第二次构建失败: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader 关闭后第二次构建仍未完成")
+	}
+	if _, err := os.Stat(filepath.Join(versionsDir, "reader-old")); !os.IsNotExist(err) {
+		t.Fatalf("reader 关闭后旧版本应被回收，statErr=%v", err)
+	}
+	assertOnlyVersion(t, versionsDir, "reader-new")
+}
+
+func waitForClosedStagingDB(t *testing.T, versionsDir string, buildDone <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-buildDone:
+			t.Fatalf("staging 就绪前构建已结束: %v", err)
+		default:
+		}
+
+		entries, err := os.ReadDir(versionsDir)
+		if err != nil {
+			t.Fatalf("读取 versions 目录失败: %v", err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), stagingDirPrefix) {
+				continue
+			}
+			dbDir := filepath.Join(versionsDir, entry.Name(), dbDirName)
+			db, err := pebble.Open(dbDir, &pebble.Options{ReadOnly: true, Logger: silentLogger{}})
+			if err != nil {
+				continue
+			}
+			_, closer, metaErr := db.Get(metadataKey)
+			if metaErr == nil {
+				metaErr = closer.Close()
+			}
+			closeErr := db.Close()
+			if metaErr == nil && closeErr == nil {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("等待已关闭的 staging DB 超时")
+}
+
+func assertNoStagingDirs(t *testing.T, versionsDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(versionsDir)
+	if err != nil {
+		t.Fatalf("读取 versions 目录失败: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), stagingDirPrefix) {
+			t.Fatalf("构建结束后残留 staging 目录: %s", entry.Name())
+		}
+	}
+}
+
+func assertOnlyVersion(t *testing.T, versionsDir, want string) {
+	t.Helper()
+	entries, err := os.ReadDir(versionsDir)
+	if err != nil {
+		t.Fatalf("读取 versions 目录失败: %v", err)
+	}
+	var versions []string
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), stagingDirPrefix) {
+			versions = append(versions, entry.Name())
+		}
+	}
+	if len(versions) != 1 || versions[0] != want {
+		t.Fatalf("正式版本目录=%v, want [%s]", versions, want)
 	}
 }
 
