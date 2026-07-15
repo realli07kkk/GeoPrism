@@ -4,7 +4,7 @@ slug: ARCHITECTURE
 scope: GeoPrism 整体架构总入口
 summary: 纯 Go 单二进制 CLI；CLI 薄入口 + internal/cli 编排 + backend 五模块 + render 渲染
 status: current
-last_reviewed: 2026-06-20
+last_reviewed: 2026-07-15
 tags: [cli, overview]
 depends_on: []
 implements:
@@ -110,7 +110,26 @@ graph TD
 | `internal/cli/ip_merge.go:62` | `maybeWriteBack`：ipinfo 结果异步回写 |
 | `backend/ipinfo/client.go:70` | `LookupIP`：ipinfo Lite API 调用 |
 
-## 8. 相关文档
+## 8. IPDB v2 与 overlay backend 当前状态（2026-07-15）
+
+本节覆盖 §0–§7 中仍沿用旧 Store / 异步回写表述的部分；CLI 查询编排的完整重写仍留给 `ipdb-lookup-integration`。
+
+- base 已是 v2 ReadOnly Pebble：`BuildFromCSV` 产出 primary/cidr 双索引，公开 `OpenCurrent` 通过过渡 `Store` 转调 `BaseStore` 的真 LPM 与三段 CIDR 查询；运行期 `WriteRecord` 明确拒绝写入 base。
+- `backend/ipdb` 已提供独立 `OpenOverlay` 与 `OverlayStore.Get/Put/Close`。overlay 固定落在 `ipdb/overlay/db`，拥有独立 `OverlayMetadata` / format version、单 IP `/32`/`/128` key、记录级 TTL 与同步持久化覆盖写，base 重建不会扫描或回收它。
+- `OpenOverlay` 从打开到 `Close` 非阻塞独占持有 `overlay/OVERLAY.lock`；锁冲突立即返回 `ErrOverlayLocked`。Open/metadata 阶段确认的损坏会在完整关闭资源后保留到唯一 quarantine sibling 并重建，普通 I/O 和运行期 corruption 不触发隔离。
+- overlay backend **尚未接入 `App` / CLI**：当前用户查询不会读取 overlay，live 结果也不会回写；默认 TTL、三来源候选选择、降级 warning 与 `App` 双句柄生命周期仍属于 `ipdb-lookup-integration`。
+
+当前新增磁盘布局：
+
+```text
+ipdb/
+└── overlay/
+    ├── OVERLAY.lock
+    ├── db
+    └── quarantine-{utc}[-N]
+```
+
+## 9. 相关文档
 
 - 承载需求：[多 Provider DNS 查询](../requirements/multi-provider-dns-query.md)、[离线 IP / CIDR 查询](../requirements/offline-ip-lookup.md)
 - 子系统：[dns-query.md](./dns-query.md)、[ip-lookup.md](./ip-lookup.md)

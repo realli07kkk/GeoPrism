@@ -4,7 +4,7 @@ slug: ip-lookup
 scope: 离线 IP / CIDR 查询子系统（ipdb 存储、ipinfo 回退、数据源合并、异步回写）
 summary: 单 IP 走 ipdb→ipinfo 合并；CIDR 固定走 ipdb 区间扫描，未命中才回退单 IP
 status: current
-last_reviewed: 2026-06-20
+last_reviewed: 2026-07-15
 tags: [ipdb, cidr, ipinfo, pebble]
 depends_on:
   - ARCHITECTURE
@@ -131,7 +131,7 @@ ipdb/
 - **`ipinfoLookup` 字段可被测试注入**：`App.ipinfoLookup func(string) *ipinfo.Response`（`internal/cli/app.go:33`）允许测试替换真实 HTTP 调用——改这块逻辑时注意别破坏测试钩子。
 - **`-j` 在 ipdb build 时被忽略并警告**：`ipdb` 不在 `jsonSupportedCommands` 里（`internal/cli/main.go:59`）。
 
-## 7. v2 收口状态（2026-06-22，ipdb-v2-query 落地）
+## 7. v2 / overlay backend 收口状态（2026-07-15）
 
 本节标注 ipdb-v2-lpm roadmap 最小闭环（ipdb-v2-query）落地后，本文档与代码的已知脱节。
 **§1–§6 仍是止血前/v1 的描述**，完整重写留给 `ipdb-lookup-integration`（届时 `Store` 过渡壳拆除、`App` 改持 `*BaseStore`/`*OverlayStore`、`WriteRecord` 删除）。读者请以本节为准判断当前真实行为。
@@ -142,13 +142,15 @@ ipdb/
 - `Store`（`backend/ipdb/store.go`）现为**过渡壳**：内部持 `*BaseStore`，`LookupIP`/`LookupCIDR` 转 v2 真 LPM / 三段 CIDR；`WriteRecord` 改为显式返回只读错误。cli 5 调用点签名零 diff。
 - 真 LPM ladder（单 IP 逐前缀长度 point Get）+ CIDR 三段查询（ancestors 精确 Get + self + descendants 区间扫描）已取代 v1 近似算法；`LookupCIDR` 按 `encodeCIDRKeyV2` 字节序确定性排序。
 - `currentFormatVersion` 升到 2。
+- `backend/ipdb/overlay.go` 已落地独立 `OverlayStore`：`OpenOverlay` / `Get` / `Put` / `Close`、独立库级 metadata/version、记录级 TTL、同步持久化覆盖写、坏 value 机会性删除、损坏库 quarantine 与非阻塞单 owner 生命周期锁。它位于 `ipdb/overlay/`，与 base 版本目录物理隔离。
+- overlay backend 当前没有被 `App` 或 CLI 调用；用户可见查询仍不读取或写入 overlay。三来源候选选择、默认 TTL、live 同步回写与组件级降级留给 `ipdb-lookup-integration`。
 
 **本文档与代码的脱节（待 integration 重写，勿据此判断现状）**：
 - §2 mermaid / §5 代码锚点仍描述 v1 `Store.LookupIP`(SeekGE+prev)/`LookupCIDR`(Prev回看)/`WriteRecord`/单索引 `0x04/0x06`——实际已切 v2 真 LPM / 三段 CIDR / 过渡壳 / 双索引 `0x14/0x16/0x24/0x26`。
 - §4"CIDR 查询要回看前一条记录"已被三段查询取代。
-- §6"回写和查询共享同一 Pebble 句柄"——v2 base 已 ReadOnly，回写目标改为（未来的）overlay（`ipdb-overlay-store` 未落地前运行期回写已全部停用）。
+- §6"回写和查询共享同一 Pebble 句柄"——v2 base 已 ReadOnly；独立 overlay backend 已落地但尚未接入 CLI，因此运行期回写仍停用。
 
-详细设计见 `.codestable/features/2026-06-22-ipdb-v2-query/` 与 roadmap `.codestable/roadmap/ipdb-v2-lpm/`。
+详细设计见 `.codestable/features/2026-06-22-ipdb-v2-query/`、`.codestable/features/2026-07-15-ipdb-overlay-store/` 与 roadmap `.codestable/roadmap/ipdb-v2-lpm/`。
 
 ## 8. 相关文档
 

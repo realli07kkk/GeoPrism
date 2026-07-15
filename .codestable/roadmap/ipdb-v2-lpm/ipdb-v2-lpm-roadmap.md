@@ -3,7 +3,7 @@ doc_type: roadmap
 slug: ipdb-v2-lpm
 status: active
 created: 2026-06-20
-last_reviewed: 2026-06-22
+last_reviewed: 2026-07-15
 tags: [ipdb, lpm, pebble, storage, cidr, overlay]
 related_requirements: [offline-ip-lookup]
 related_architecture: [ip-lookup]
@@ -33,13 +33,13 @@ related_architecture: [ip-lookup]
 - CIDR 查询改为 **ancestors（primary 精确 Get）+ self + descendants（cidr 区间扫描）** 三段合并，重叠/嵌套网段下返回全部相交记录
 - base 构建：**相同 prefix 严格拒绝**（`ErrDuplicatePrefix`），**允许不同 prefix 的重叠**（删除现有 overlap reject）；staging 目录原子构建；primary/cidr 同 batch 双写
 - base / overlay 物理分离：base 为 CSV 构建的不可变库、**`ReadOnly` 打开**；overlay 为 ipinfo 单 IP 缓存（独立 metadata / version / TTL）
-- 回写目标从"写进 base keyspace"改为 **同步写进 overlay**（`PutOverlay`，失败仅 warning）
+- 回写目标从"写进 base keyspace"改为 **同步写进 overlay**（`OverlayStore.Put`，失败仅 warning）
 - format version 升级与 v1 旧库识别（`ErrLegacyFormat`）+ capability 校验（`ErrIncompleteSchema`）
 - **切换原子性**：`ipdb-v2-base-build` 只实现未激活的内部构建/打开能力，直到 `ipdb-v2-query` 收口才原子切换公开 `BuildFromCSV` / `OpenCurrentBase` / 查询路径 / `currentFormatVersion=2`
 
 ### 明确不做
 
-- **在线查询语义统一 + 回写生命周期队列**（审计意见 #2：`ipdb-first` 短路、`--offline` / `--verify-online` / `--no-writeback` flag、`WriteBackQueue` + `App.Close` 等待）——独立 feat，消费本 roadmap 暴露的 overlay 接口契约，不在此实现。本 roadmap 回写采用**同步 `PutOverlay`**。
+- **在线查询语义统一 + 回写生命周期队列**（审计意见 #2：`ipdb-first` 短路、`--offline` / `--verify-online` / `--no-writeback` flag、`WriteBackQueue` + `App.Close` 等待）——独立 feat，消费本 roadmap 暴露的 overlay 接口契约，不在此实现。本 roadmap 回写采用**同步 `OverlayStore.Put`**。
 - **M3 更新功能本身**（增量更新、远程下载 / 校验库、版本比对）——本 roadmap 是其前置存储能力。
 - **`data_source_priority` 策略语义改动**——保持现状（默认 ipdb-first，CIDR 不受控）；只调整底层存储与候选模型，不改对外优先级行为。
 - **overlay 缓存的可视化 / 清理命令**（`ipdb overlay clear` 之类）与**容量 / LRU 回收**——只做 TTL + 过期机会性删除，不做主动容量回收。记观察项。
@@ -68,12 +68,12 @@ IPDB v2
 ### 模块 C · overlay 存储
 - **职责**：运行期 ipinfo 单 IP 结果缓存，独立 Pebble keyspace + **独立 `OverlayMetadata`（`overlayFormatVersion`）**；只存 /32、/128；每条带 source / 抓取时间 / 过期时间；TTL 过期视为未命中并机会性删除；corruption / lock 独立降级。永不被 CSV 构建触碰。
 - **承载的子 feature**：`ipdb-overlay-store`
-- **触碰的现有代码**：新增 `backend/ipdb/overlay.go`；`internal/cli/ip_merge.go` 等回写路径改写入 overlay
+- **触碰的现有代码**：新增 `backend/ipdb/overlay.go` 及测试，提供同步 `OpenOverlay` / `Get` / `Put` / `Close` 能力；小幅扩展 `backend/ipdb/file_lock_*` 的非阻塞取得能力且不改变 base 锁语义；不接入 CLI
 
 ### 模块 D · 查询编排 + 迁移
-- **职责**：`App` 分别懒加载并持有 `BaseStore` / `OverlayStore`（各自独立的 err 字段与降级），不再聚合成单一句柄；cli 用 `IPCandidate` 把 base / overlay / live 三来源交给**纯函数** `selectCandidate` 选择；live 查询成功后**同步** `PutOverlay`（失败仅 warning）；打开 v1 base 返回 `ErrLegacyFormat` 提示重建、缺 capability 返回 `ErrIncompleteSchema`。
+- **职责**：`App` 分别懒加载并持有 `BaseStore` / `OverlayStore`（各自独立的 err 字段与降级），不再聚合成单一句柄；cli 用 `IPCandidate` 把 base / overlay / live 三来源交给**纯函数** `selectCandidate` 选择；live 查询成功后**同步**调用 `OverlayStore.Put`（失败仅 warning）；打开 v1 base 返回 `ErrLegacyFormat` 提示重建、缺 capability 返回 `ErrIncompleteSchema`。
 - **承载的子 feature**：`ipdb-lookup-integration`
-- **触碰的现有代码**：`backend/ipdb/store.go`（`OpenCurrentBase` / `OpenOverlay` / 删除 `WriteRecord`）、`internal/cli/app.go`、`internal/cli/ip_lookup.go`、`internal/cli/ip_match.go`、`internal/cli/ip_merge.go`、`internal/cli/cidr_lookup.go`
+- **触碰的现有代码**：`backend/ipdb/store.go`（`OpenCurrentBase` / 删除 `WriteRecord`）、`internal/cli/app.go`、`internal/cli/ip_lookup.go`、`internal/cli/ip_match.go`、`internal/cli/ip_merge.go`、`internal/cli/cidr_lookup.go`；消费模块 C 已提供的 `OpenOverlay`
 
 ## 4. 模块间接口契约 / 共享协议（架构层详设）
 
@@ -220,10 +220,11 @@ func (o *OverlayStore) Close() error
 ```
 
 **约束**：
-- overlay 只接受单 IP（隐含 /32 或 /128）；传入其它 prefix 由调用方负责，overlay 不存网段。
+- `addr` 必须是合法 IPv4 或真实 IPv6，拒绝 invalid / IPv4-mapped IPv6 / 带 zone 的 IPv6；key 隐含 /32 或 /128。`Record.Network` 不进 value，`Get` 按 key 回填规范 host prefix；`Put` 接受空 Network，非空时必须与 `addr` 表示同一个 host prefix。
 - overlay 物理独立于 base 版本目录，base 重建不触碰 overlay。
 - `Put` 必须幂等（同 IP 覆盖写）。
-- **降级**：`OverlayMetadata` 不兼容且未被锁 → rename 到 quarantine 后重建；lock 失败 → 仅禁用，不得 rename / 删除；单条 record 解码损坏 → 作为 cache miss，可机会性删除。
+- **生命周期锁**：`OpenOverlay` 在任何 `overlay/db` 打开、隔离或重建动作前，非阻塞取得 `overlay/OVERLAY.lock` 独占锁并持有到 `Close`；忙锁返回可判定的 `ErrOverlayLocked`，不得等待、rename 或删除。该外层锁消除“关闭 Pebble 后、rename 前”被另一进程抢先打开的竞态，且不改变 base 现有锁语义。
+- **降级**：成功持有生命周期锁后，`OpenOverlay` 在打开既有 DB 或读取 `OverlayMetadata` 阶段发现 metadata 缺失、JSON 损坏、版本不兼容，或 Pebble 明确报告 corruption → 先完整关闭所有已取得的 reader/DB，再把 `overlay/db` rename 到唯一 quarantine sibling 并重建；任一关闭失败、普通权限 / I/O / lock/open 错误都只返回 error，不 rename / 删除。运行期 `Get` / `Put` 的 Pebble corruption 只返回 error，不在活句柄内重建；单条 record value 解码损坏 → 作为 cache miss，可机会性删除。禁用 overlay 后继续 base/live 属 §4.5 integration 责任。
 - **TTL 默认值不在此层**：`OverlayStore` 只负责保存与判断给定的 `ExpiresAt`；默认 TTL 由 cli 编排层决定（见 §4.5）。
 - 不做容量 / LRU 回收（仅 TTL + 机会性删除）。
 
@@ -292,7 +293,10 @@ ipdb/
 ├── versions/
 │   ├── .staging-{buildID}/db        # 构建中：验证 + 关库后 rename 为正式目录再切 CURRENT
 │   └── {buildID}/db                 # base 库（v2 格式，不可变）
-└── overlay/db                       # overlay 缓存（独立 Pebble，跨 base 版本存活）
+└── overlay/
+    ├── OVERLAY.lock                 # 非阻塞独占生命周期锁；Open 到 Close 持有
+    ├── db                            # overlay 缓存（独立 Pebble，跨 base 版本存活）
+    └── quarantine-{utc}-{suffix}    # metadata/DB corruption 隔离证据；不自动清理
 
 base 打开：pebble.Options{ ReadOnly: true, Logger: silentLogger{} }
 
@@ -331,14 +335,14 @@ overlay 独立元数据：OverlayMetadata{ FormatVersion=1, CreatedAt }
    - 对应 feature：2026-06-22-ipdb-v2-query
    - 备注：**最小闭环**已落地；`OpenCurrentBase` 公开 API 推迟到 integration（query 收口用 `Store` 过渡壳转调，见 §9）；property test 400 轮全绿、benchmark IPv4 7.4μs / IPv6 64μs
 
-4. **ipdb-overlay-store** — 新增独立 overlay 存储（独立 `OverlayMetadata`/version + TTL + 机会性删除 + corruption/lock 降级）+ 回写改同步写入 overlay（`PutOverlay`），base 重建不触碰 overlay
+4. **ipdb-overlay-store** — 新增独立 overlay 存储（`OpenOverlay` / `Get` / `Put` / `Close`、独立 `OverlayMetadata`/version、TTL、机会性删除、corruption/lock 降级），base 重建不触碰 overlay；本 feature 只提供 backend 能力，不接入 CLI
    - 所属模块：模块 C · overlay 存储
    - 依赖：ipdb-v2-schema
-   - 状态：planned
-   - 对应 feature：未启动
-   - 备注：与 base 系可并行；落地后联合第 5 条正式取代 issue `2026-06-20-ipdb-writeback-breaks-lpm` 的止血
+   - 状态：done
+   - 对应 feature：`2026-07-15-ipdb-overlay-store`
+   - 备注：backend 能力已于 2026-07-15 验收；CLI 读取与 live 结果同步 `OverlayStore.Put` 统一归第 5 条；两条联合落地后正式取代 issue `2026-06-20-ipdb-writeback-breaks-lpm` 的止血
 
-5. **ipdb-lookup-integration** — `App` 分别持有 base/overlay 并各自降级；引入 `IPCandidate` 三来源纯函数选择；live 成功后同步 `PutOverlay`（失败仅 warning）；删除 `WriteRecord`；回写 architecture
+5. **ipdb-lookup-integration** — `App` 分别持有 base/overlay 并各自降级；引入 `IPCandidate` 三来源纯函数选择；live 成功后同步调用 `OverlayStore.Put`（失败仅 warning）；删除 `WriteRecord`；回写 architecture
    - 所属模块：模块 D · 查询编排 + 迁移
    - 依赖：ipdb-v2-query, ipdb-overlay-store
    - 状态：planned
@@ -371,15 +375,15 @@ overlay 独立元数据：OverlayMetadata{ FormatVersion=1, CreatedAt }
 | v2 codec 异常输入（错 version / unknown flags / 截断 uvarint / 多余尾部字节）、capability 位 | `ipdb-v2-schema` |
 | staging、重复 prefix（`ErrDuplicatePrefix`）、双索引同 batch 原子性、`primaryCount==cidrCount==RowCount`、ReadOnly 写失败 | `ipdb-v2-base-build` |
 | LPM/CIDR property test（暴力 oracle）、性能 benchmark（IPv4/IPv6 冷热缓存 p50/p95，1/10/50 个 IP 批量）、v1 重建提示、缺 capability 拒绝打开 | `ipdb-v2-query` |
-| TTL（`now==ExpiresAt` 过期 / 零值=0 永不过期）、metadata 损坏隔离、lock 失败降级、base 重建后 overlay 持久化、注入 clock | `ipdb-overlay-store` |
-| 三来源候选选择纯函数、同步 `PutOverlay`、组件级降级矩阵、CLI 行为与 architecture 回写 | `ipdb-lookup-integration` |
+| TTL（`now==ExpiresAt` 过期 / 零值=0 永不过期）、metadata 损坏隔离、lock 冲突返回错误且目录不变、base 重建后 overlay 持久化、注入 clock | `ipdb-overlay-store` |
+| 三来源候选选择纯函数、同步 `OverlayStore.Put`、组件级降级矩阵、CLI 行为与 architecture 回写 | `ipdb-lookup-integration` |
 | v1/v2 数据库体积、构建时间、端到端兼容矩阵 | roadmap 最终验收 |
 
 property test 覆盖项（写进 `ipdb-v2-query` checklist）：随机 prefix 集 + 暴力 oracle（单 IP 取 `Bits()` 最大的包含 prefix、CIDR 取全部相交）；边界 `/0`、`/32`、`/128`、同起始 `/8`/`/16`/`/24`、多父 prefix 同时覆盖、完全相同 prefix 重复输入（应 reject）。
 
 ## 8. 观察项
 
-- `architecture/ip-lookup.md` §2/§4 仍是**止血前的旧描述**（`maybeWriteBack` 异步回写、"CIDR 查询要回看前一条记录"、`WriteRecord`、单索引 `0x04/0x06`），与当前止血后状态已部分脱节；本 roadmap 不改 arch，落地后由 `ipdb-lookup-integration` 的 `cs-feat-accept` 统一回写。
+- `architecture/ip-lookup.md` §2/§4 仍是**止血前的旧描述**（`maybeWriteBack` 异步回写、"CIDR 查询要回看前一条记录"、`WriteRecord`、单索引 `0x04/0x06`）；§7 已记录 v2 base 与独立 overlay backend 的当前真相，完整主流程重写仍由 `ipdb-lookup-integration` 收口。
 - 与 issue `2026-06-20-ipdb-writeback-breaks-lpm` 的关系：`ipdb-overlay-store` + `ipdb-lookup-integration` 落地后正式取代第一层止血；届时在该 issue fix-note 追加"已被 A′ 取代"标注。
 - 审计意见 #2（在线查询语义统一 + `WriteBackQueue` 生命周期 + `App.Close` 等待）是独立 feat，依赖本 roadmap §4.4/§4.5 的 overlay 接口；建议第 4、5 条落地后再启动。
 - overlay 缓存的清理 / 浏览命令（如 `ipdb overlay clear`）、容量回收策略暂不做，后续若需要另开 feature 或 req。
@@ -400,7 +404,7 @@ property test 覆盖项（写进 `ipdb-v2-query` checklist）：随机 prefix �
   - §4.2 base value v2 与 overlay value v1 拆为**两套独立协议**，去掉 `flagOverlayMeta`；decode 返回的 `Record.Network` 为空由 Store 回填；`expiresAtUnix==0` 表示永不过期。
   - §4.3 `LookupCIDR` 由"单次向前回看"改为 **ancestors（primary 精确 Get）+ self + descendants（cidr 区间扫描）** 三段合并 + `ErrCorruptIndex`；`OpenCurrentBase` ReadOnly 打开、`ErrLegacyFormat` / `ErrIncompleteSchema`。
   - §4.4 overlay 新增独立 `OverlayMetadata`/version、TTL 边界（`now==ExpiresAt` 过期）、机会性删除、corruption/lock 降级。
-  - §4.5 `OpenCurrent` 拆为 `OpenCurrentBase` / `OpenOverlay`；`App` 分别持有并各自降级；新增 `IPCandidate` 三来源纯函数选择；同步 `PutOverlay`；删除 `WriteRecord`；默认 TTL 在 integration 层。
+  - §4.5 `OpenCurrent` 拆为 `OpenCurrentBase` / `OpenOverlay`；`App` 分别持有并各自降级；新增 `IPCandidate` 三来源纯函数选择；同步 `OverlayStore.Put`；删除 `WriteRecord`；默认 TTL 在 integration 层。
   - §4.6 staging 目录原子构建、`primaryCount==cidrCount==RowCount` 不变量、base `ReadOnly` 打开。
 
   **决策拍板**：重复 prefix = `reject duplicate`（删除 builder 重叠 reject、改为允许不同 prefix 重叠 + 相同 prefix 拒绝）；CIDR 索引 = 零长度 value；不新增第六个 feature，改为 §7 Roadmap 级验收门槛表。
@@ -416,3 +420,18 @@ property test 覆盖项（写进 `ipdb-v2-query` checklist）：随机 prefix �
   **理由**：让 query 收口聚焦"真 LPM + 正确 CIDR + v1 拒绝"核心正确性，不提前做 integration 的 App 接线 + 删 `WriteRecord` + 引入 overlay 字段（依赖未就绪）。过渡壳代价是 `Store` 暂时包一层 delegation，integration 时清除。
 
   **受影响的已启动 feature**：`ipdb-v2-query`（design 阶段，本次调整的发起方）。
+
+- **2026-07-15（ipdb-overlay-store 职责边界澄清）**：
+
+  **feature 边界变化**：
+  - `ipdb-overlay-store` 只实现模块 C 的 backend 存储能力：`OpenOverlay` / `Get` / `Put` / `Close`、独立 metadata/version、TTL、机会性删除和 corruption/lock 降级；不修改 `App`，不接入 CLI 查询或在线回写路径。
+  - `ipdb-lookup-integration` 统一承担 `App` 的 base/overlay 双句柄生命周期、overlay 读取、live 成功后的同步 `OverlayStore.Put`、三来源候选选择和旧 `WriteRecord` 删除。
+  - 活跃契约统一使用真实方法名 `OverlayStore.Put`；overlay 增加独立、非阻塞的 `OVERLAY.lock` 生命周期锁，确保 lock 冲突和 quarantine 竞态都不会破坏现有目录。API 签名与 feature DAG 不变。
+
+  **理由**：原第 4、5 条都写了“同步回写 overlay”，会迫使第 4 条提前实现第 5 条的 App 接线，或引入随后即删除的过渡层。按存储能力与 CLI 编排分开后，两条 feature 可独立验收且依赖关系不变。
+
+  **受影响的已启动 / 已完成 feature**：无。前三条 done feature 的 codec/base/query 契约均不变；`ipdb-overlay-store` 此前仍为 planned。
+
+- **2026-07-15（ipdb-overlay-store 验收完成）**：
+
+  **落地结果**：模块 C 的独立 overlay backend 已完成并验收，roadmap item 改为 `done`。CLI/App 接线、默认 TTL、三来源选择、live 同步回写和旧 `WriteRecord` 删除仍完整保留在 `ipdb-lookup-integration`，feature DAG 与用户可见行为不变。

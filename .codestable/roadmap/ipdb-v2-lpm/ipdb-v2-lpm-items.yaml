@@ -27,15 +27,15 @@ items:
     notes: 最小闭环已落地（2026-06-22 accept）；v1 返回 ErrLegacyFormat、缺 capability 返回 ErrIncompleteSchema；OpenCurrentBase 公开 API 推迟到 integration，query 收口用 Store 过渡壳转调（见 roadmap §9 2026-06-22 实施顺序调整）；property test 400 轮 + benchmark IPv4 7.4μs/IPv6 64μs
 
   - slug: ipdb-overlay-store
-    description: 新增独立 overlay 存储（独立 OverlayMetadata/version + TTL + 机会性删除 + corruption/lock 降级）+ 回写改同步写入 overlay（PutOverlay）
+    description: 新增独立 overlay 存储（OpenOverlay/Get/Put/Close、独立 OverlayMetadata/version、TTL、机会性删除、corruption/lock 降级），只提供 backend 能力、不接入 CLI
     depends_on: [ipdb-v2-schema]
-    status: planned
-    feature: null
+    status: done
+    feature: 2026-07-15-ipdb-overlay-store
     minimal_loop: false
-    notes: 与 base 系可并行；落地后联合 ipdb-lookup-integration 正式取代 issue 2026-06-20-ipdb-writeback-breaks-lpm 的止血
+    notes: backend 能力已验收（2026-07-15）；OpenOverlay/Get/Put/Close、TTL、自愈 quarantine、单 owner fail-fast lock、durable Put 与 base 隔离均有自动化证据；CLI 读取与 live 同步 OverlayStore.Put 仍归 ipdb-lookup-integration
 
   - slug: ipdb-lookup-integration
-    description: App 分别持有 base/overlay 并各自降级；引入 IPCandidate 三来源纯函数选择；live 成功后同步 PutOverlay；删除 WriteRecord；回写 architecture
+    description: App 分别持有 base/overlay 并各自降级；引入 IPCandidate 三来源纯函数选择；live 成功后同步 OverlayStore.Put；删除 WriteRecord；回写 architecture
     depends_on: [ipdb-v2-query, ipdb-overlay-store]
     status: planned
     feature: null

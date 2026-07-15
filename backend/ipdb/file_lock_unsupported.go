@@ -10,6 +10,10 @@ func acquireFileLock(path string, exclusive bool) (*fileLock, error) {
 	return nil, fmt.Errorf("当前操作系统不支持 IPDB 生命周期文件锁")
 }
 
+func tryAcquireFileLock(path string, exclusive bool) (*fileLock, bool, error) {
+	return nil, false, fmt.Errorf("当前操作系统不支持 IPDB 生命周期文件锁")
+}
+
 func (l *fileLock) Close() error {
 	return nil
 }

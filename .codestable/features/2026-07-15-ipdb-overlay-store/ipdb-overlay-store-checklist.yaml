@@ -1,0 +1,141 @@
+feature: 2026-07-15-ipdb-overlay-store
+created: 2026-07-15
+
+steps:
+  - action: "生命周期骨架：建立独立 OverlayStore 的首次 Open、OverlayMetadata 初始化、幂等 Close 与非阻塞跨进程独占生命周期锁；保持 base 原阻塞锁语义"
+    exit_signal: "空 root 可创建并关闭 overlay；第二 owner 立即得到可 errors.Is 判定的 ErrOverlayLocked；关闭后可重开；base 既有锁测试不变"
+    status: done
+
+  - action: "损坏隔离编排：校验既有库 metadata，区分可确认 corruption 与普通错误，在外层锁保护下完整关闭资源后执行唯一 quarantine 并建立 fresh DB"
+    exit_signal: "metadata 缺失/坏 JSON/错误版本/零 CreatedAt 与 Open/metadata corruption 可恢复；普通错误、忙锁和任一关闭失败均不移动原目录；连续隔离不覆盖证据"
+    status: done
+
+  - action: "记录读写节点：接通单 IP Put/Get、Network 回填、Unix 秒时间协议、TTL 边界、坏 value 与过期记录的机会性删除"
+    exit_signal: "IPv4/IPv6 round-trip、同 IP 覆盖写、not found、now==ExpiresAt、零过期时间、坏 value 自愈和输入拒绝均有独立证据"
+    status: done
+
+  - action: "并发与持久化收口：串行化 Get/Put/Close，锁死 durable Put、零值 miss、运行期 corruption 只报错、资源关闭顺序与错误合并语义"
+    exit_signal: "关闭竞态不 panic、不误删新值；Put 成功后跨重开仍可读；Close 幂等且关闭后稳定返回 ErrOverlayClosed；运行期错误不触发 quarantine"
+    status: done
+
+  - action: "验收矩阵与质量门：补齐 metadata/value corruption、lock、跨平台锁映射、base 重建隔离、并发和范围守护测试，执行项目全量验证"
+    exit_signal: "design 第 3 节全部场景都有自动化证据；支持平台构建通过；go test ./...、go test -race ./backend/ipdb、go vet ./...、gofmt -l、git diff --check 全绿"
+    status: done
+
+checks:
+  # 名词契约
+  - item: "新增 overlayFormatVersion=1、OverlayMetadata{FormatVersion,CreatedAt}、OverlayStore 与 OpenOverlay/Get/Put/Close 公共契约"
+    source: 名词契约
+    status: passed
+  - item: "ErrOverlayLocked 与 ErrOverlayClosed 是可 errors.Is 判定的稳定 sentinel"
+    source: 名词契约
+    status: passed
+  - item: "OverlayMeta 保持记录级 metadata；OverlayMetadata 仅表示库级 metadata，两者不混用"
+    source: 名词契约
+    status: passed
+
+  # 编排骨架 / 流程级约束
+  - item: "OpenOverlay 在打开、隔离或重建 db 前非阻塞取得 overlay/OVERLAY.lock，并持有到 Close；仅明确 busy code 映射 ErrOverlayLocked"
+    source: 流程级约束
+    status: passed
+  - item: "首次 db 不存在时创建库并 durable 写入 version=1、CreatedAt 非零的 metadata"
+    source: 编排骨架
+    status: passed
+  - item: "既有 metadata value 在 closer 有效期内复制，所有已取得 closer/DB 成功关闭后才允许 quarantine"
+    source: 流程级约束
+    status: passed
+  - item: "仅 Open/metadata 阶段确认的 corruption 自动 quarantine；普通 I/O/权限/lock 错误与运行期 Get/Put corruption 不 rename、不重建、不重试"
+    source: 流程级约束
+    status: passed
+  - item: "quarantine 使用 Windows-safe 唯一名称，rename/重建失败保留旧证据且不自动清理"
+    source: 流程级约束
+    status: passed
+  - item: "Get 在 closer 有效期内复制 value，关闭 closer 后才解码、判 TTL 或机会性 Delete"
+    source: 流程级约束
+    status: passed
+  - item: "not found、过期、坏 value 均返回 Record{}、OverlayMeta{}、matched=false；清理失败额外返回 error"
+    source: 流程级约束
+    status: passed
+  - item: "TTL 仅使用 Get 的 now 参数；now==ExpiresAt 已过期，零 ExpiresAt 永不过期，磁盘 round-trip 为 UTC 秒精度"
+    source: 流程级约束
+    status: passed
+  - item: "Put 使用 addr 作为 key/Network 真相，同 IP durable last-write-wins，不设置默认 TTL"
+    source: 流程级约束
+    status: passed
+  - item: "Get/Put/Close 在同一句柄内串行；Close 先关闭 Pebble 再释放生命周期锁，合并两侧错误且幂等"
+    source: 流程级约束
+    status: passed
+  - item: "所有 Pebble 打开使用 silentLogger，不产生额外 stdout/stderr"
+    source: 流程级约束
+    status: passed
+
+  # 挂载点
+  - item: "backend/ipdb 新增 OpenOverlay 与 OverlayStore.Get/Put/Close 公共挂载点"
+    source: 挂载点
+    status: passed
+  - item: "磁盘新增 overlay/OVERLAY.lock、overlay/db、quarantine sibling 与库内 OverlayMetadata"
+    source: 挂载点
+    status: passed
+
+  # 验收场景
+  - item: "首次 Open 创建 lock/db/metadata；metadata version=1 且 CreatedAt 非零"
+    source: 验收场景
+    status: passed
+  - item: "IPv4/IPv6 Put→Get→Close→reopen round-trip，Network 回填 /32 或 /128，时间为 UTC 秒精度"
+    source: 验收场景
+    status: passed
+  - item: "同 IP 二次 Put 只保留最后一份完整 Record/OverlayMeta"
+    source: 验收场景
+    status: passed
+  - item: "TTL 覆盖 before/equal/after/zero，并验证过期 key 删除及删除失败的零值 miss+error"
+    source: 验收场景
+    status: passed
+  - item: "坏 value 返回零值 miss 并删除自身，不影响同库其它记录；删除失败返回 error"
+    source: 验收场景
+    status: passed
+  - item: "metadata 缺失/坏 JSON/错误版本/零 CreatedAt/Open 或 metadata corruption 各自触发唯一 quarantine 与 fresh DB"
+    source: 验收场景
+    status: passed
+  - item: "普通错误、资源关闭失败和运行期 corruption 返回 error 且目录不变"
+    source: 验收场景
+    status: passed
+  - item: "第二 owner 立即 ErrOverlayLocked 且目录不变；首 owner Close 后可重开；锁住的损坏库不 quarantine"
+    source: 验收场景
+    status: passed
+  - item: "Close 两次安全；Close 后 Get/Put 返回 ErrOverlayClosed；并发调用不 panic、不误删新 Put"
+    source: 验收场景
+    status: passed
+  - item: "合法但不存在的 IP Get 返回零值 miss；invalid、IPv4-mapped IPv6、zoned IPv6 的 Get/Put 均拒绝"
+    source: 验收场景
+    status: passed
+  - item: "Put 拒绝与 addr 不同的非空 Network 和非零但编码为 Unix 0 的 ExpiresAt；接受空或语义相同 host prefix"
+    source: 验收场景
+    status: passed
+  - item: "Put 成功后立即 Close/reopen 仍可读，证明 durable 语义"
+    source: 验收场景
+    status: passed
+  - item: "base 重建期间及完成后 overlay 数据与可用性不受影响"
+    source: 验收场景
+    status: passed
+  - item: "Unix/Windows 支持平台可构建，base 阻塞锁语义不变，overlay busy code 映射准确"
+    source: 验收场景
+    status: passed
+
+  # 范围守护
+  - item: "internal/cli、App、默认 TTL、live 回写、候选选择与 CLI 输出协议无 diff"
+    source: 范围守护
+    status: passed
+  - item: "Store/BaseStore/OpenCurrent/WriteRecord 与 base keyspace 行为无 diff"
+    source: 范围守护
+    status: passed
+  - item: "不新增 CIDR/LPM overlay API、清理命令、配置、定时器、容量/LRU 或异步队列"
+    source: 范围守护
+    status: passed
+  - item: "architecture/ARCHITECTURE.md 与 architecture/ip-lookup.md 无 diff，留给 integration 收口"
+    source: 范围守护
+    status: passed
+
+  # 质量门
+  - item: "go test ./...、go test -race ./backend/ipdb、go vet ./...、gofmt -l、git diff --check 全绿"
+    source: 质量门
+    status: passed
