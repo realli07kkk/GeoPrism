@@ -13,7 +13,7 @@ GeoPrism 是一个 macOS 本地运行的 DNS / IP 查询 CLI 工具，使用纯 
 
 ## 技术栈
 
-- Go 1.23
+- Go 1.26
 - 标准库 CLI（`os.Args` + `flag.NewFlagSet`）
 - `github.com/BurntSushi/toml`（Provider TOML 配置）
 - `github.com/cockroachdb/pebble/v2`（离线 IP 库）
