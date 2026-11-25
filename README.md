@@ -9,7 +9,7 @@ GeoPrism 是一个 macOS 本地运行的 DNS / IP 查询 CLI 工具，使用纯 
 - DoH / DoT / DNS(UDP) 支持
 - Provider 配置加载、列举、连通性测试与默认模板
 - NS 服务器信息查询
-- 离线 IP 库导入、解析匹配、单 IP / CIDR 查询、ipinfo 在线查询与回写、数据源优先级配置
+- 离线 IP 库导入、解析匹配、单 IP / CIDR 查询、ipinfo 在线查询与合并、数据源优先级配置
 
 ## 技术栈
 
@@ -81,6 +81,7 @@ rm geoprism
 
 ```text
 main.go      # CLI 薄入口，仅负责调用 internal/cli
+doc/         # 项目文档：架构、子系统设计、决策记录、开发指南、历史问题（入口 doc/README.md）
 internal/
   cli/       # CLI 路由、App 实现、路径管理、IP/CIDR 查询与测试
 render/      # CLI 表格渲染与 TTY 样式增强
@@ -98,7 +99,7 @@ backend/
 - `query`、`providers`、`test` 以及单个 IP / CIDR 查询在 TTY 下使用增强表格渲染
 - 非 TTY 输出保持纯文本表格协议，便于重定向和脚本处理
 - `IP 匹配详情` 在 TTY 与非 TTY 下都保持表格语义，只在样式上有差异
-- 若配置了 ipinfo token，ipdb 未命中的 IP 会自动调用 ipinfo API 查询并异步回写；新增 `Source` 列标识数据来源
+- 若配置了 ipinfo token，ipdb 未命中的 IP 会自动调用 ipinfo API 查询并合并结果（不会回写本地库）；新增 `Source` 列标识数据来源
 - `data_source_priority` 支持 `ipdb-first`（默认）和 `ipinfo-first` 两种模式
 - 同一 IP 在多个 Provider 结果中出现时，ipinfo API 只调用一次
 - `query` 会追加 `NS 服务器信息`；若目标域名本身不是 zone apex，会自动向上探测真实 zone，并显示 `实际命中 Zone`
@@ -137,3 +138,7 @@ Provider 配置说明：
 - 若文件不存在，程序会在首次启动时自动写入默认模板。
 - 配置项位于 `[settings]` 表下：`ipinfo_token`（ipinfo API token）、`data_source_priority`（`ipdb-first` 或 `ipinfo-first`）。
 - `ipinfo_token` 为空时，不启用 ipinfo 在线查询功能。
+
+## 项目文档
+
+架构、子系统设计（DNS 查询 / 离线 IP 查询 / ipdb 存储）、已确认决策、开发与测试指南、历史问题排查，见 [doc/README.md](doc/README.md)。

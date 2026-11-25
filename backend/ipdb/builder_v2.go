@@ -20,7 +20,7 @@ import (
 // ErrDuplicatePrefix 表示 v2 base 构建时出现重复 prefix：
 // 同一 address family 内，两条记录经 Masked() 后得到完全相同的 netip.Prefix
 // （即相同 primary key），无论业务字段是否相同，构建一律失败。
-// 决策见 .codestable/compound/2026-06-22-decision-ipdb-base-reject-duplicate-prefix.md。
+// 决策见 doc/decisions.md#d-08（v2 构建对重复 prefix 严格拒绝）。
 var ErrDuplicatePrefix = errors.New("base 构建出现重复 prefix")
 
 // v2BatchCommitSize 是 v2 builder 的批量提交阈值（按"行"计，每行写 primary+cidr 两个 key）。

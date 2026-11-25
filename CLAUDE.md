@@ -17,6 +17,7 @@ GeoPrism 是一个 macOS 本地运行的 DNS / IP 查询 CLI 工具，使用纯 
 ```
 GeoPrism/
 ├── main.go              # CLI 薄入口，仅负责调用 internal/cli
+├── doc/                 # 项目文档（架构 / 子系统 / 决策 / 开发 / 历史），索引见下方"项目文档索引"
 ├── internal/
 │   └── cli/             # CLI 路由、App 实现、路径管理、IP/CIDR 查询与测试
 ├── render/              # CLI 表格渲染与 TTY 样式增强
@@ -89,7 +90,7 @@ Provider 配置说明：
 - `geoprism test --all|<name>` 测试 Provider 连通性
 - `geoprism providers`、`geoprism test`、`geoprism <ip>`、`geoprism <cidr>` 在 TTY 下同样使用增强表格渲染；非 TTY 保持纯文本输出
 - 若本地存在可用离线库，会在 DNS 结果后追加 `IP 匹配详情`；TTY 与非 TTY 都保持表格语义
-- 若配置了 ipinfo token，ipdb 未命中的 IP 会自动调用 ipinfo API 查询，并将结果异步回写 ipdb
+- 若配置了 ipinfo token，ipdb 未命中的 IP 会自动调用 ipinfo API 查询并合并结果；在线结果**不会**回写 ipdb（回写已停用，见 `doc/ip-lookup.md`）
 - `data_source_priority` 支持 `ipdb-first`（默认）和 `ipinfo-first` 两种模式
 - IP 匹配详情和 IP 查询结果新增 `Source` 列，标识数据来源（`ipdb` / `ipinfo`）
 - 同一 IP 在多个 Provider 结果中出现时，ipinfo API 只调用一次（去重）
@@ -111,28 +112,22 @@ Provider 配置说明：
 - CIDR 快捷查询返回独立 JSON 结构，不复用单 IP 查询的 `ip/matched/network` 结构
 - 错误信息在 JSON 模式下输出到 stderr，格式为 `{"error":"..."}`
 
-## CodeStable 知识库
+## 项目文档索引
 
-本项目已接入 [CodeStable](https://github.com/) 工作流体系，所有 spec / 架构 / 沉淀类文档统一存放在 `.codestable/` 目录下，供 AI Agent（及人类协作者）阅读。**AI Agent 在动手改代码或设计方案前，应优先查阅本目录相关文档对齐现状与边界。**
+项目能力的设计、约束、决策与未决事项统一放在 `doc/`。**AI Agent 和开发者在动手改代码或设计方案前，按下表找到对应文档对齐现状与边界。**
 
-### 目录结构与使用场景
+| 你要做什么 | 先读 |
+|---|---|
+| 了解整体分层、模块边界、数据目录、硬边界 | [doc/architecture.md](doc/architecture.md) |
+| 改 DNS 查询链路、Provider 配置与保序、NS 服务器探测、反向 PTR、连通性测试 | [doc/dns-query.md](doc/dns-query.md) |
+| 改单 IP / CIDR 查询、ipinfo 在线合并、`data_source_priority`、`Source` 列 | [doc/ip-lookup.md](doc/ip-lookup.md) |
+| 改离线 IP 库（ipdb）的构建、key/value 编码、LPM / CIDR 查询、overlay 缓存、文件锁 | [doc/ipdb-v2.md](doc/ipdb-v2.md) |
+| 问"为什么这样设计"，或打算推翻某个已确认决策 | [doc/decisions.md](doc/decisions.md) |
+| 本地编译、跑测试、提交前质量门、`netip` / 解码 / 文件系统陷阱、平台支持 | [doc/development.md](doc/development.md) |
+| 排查历史 bug：回写破坏 LPM、JSON 结果乱序、并发构建悬空 `CURRENT` | [doc/history.md](doc/history.md) |
+| 找文档入口 | [doc/README.md](doc/README.md) |
 
-| 路径 | 内容 | 什么时候读 |
-|---|---|---|
-| `.codestable/attention.md` | CodeStable 子技能启动必读的项目注意事项（编译 / 测试 / 路径 / 凭证等碎片知识） | **每次开始任何 CodeStable 工作流前必读**；新增硬约束用 `cs-note` 追加 |
-| `.codestable/requirements/` | 能力愿景层（"用户需要什么、系统提供什么能力"），含中心索引 `VISION.md` 和按能力拆分的 req | 想知道"某个能力为什么存在、边界在哪"时读；新增 / 升级能力用 `cs-req` |
-| `.codestable/architecture/` | 架构层（"用什么结构实现"），`ARCHITECTURE.md` 是总入口，子系统文档按 `{type}-{slug}.md` 平铺 | 改某模块前读对应 doc 定位代码、理解模块边界；代码变化后用 `cs-arch` 同步 |
-| `.codestable/roadmap/` | 规划层（"大需求怎么分步实现 + 模块怎么切"） | 做长期规划时读；拆 feature 用 `cs-roadmap` |
-| `.codestable/features/` | feature spec 聚合根（每个 feature 一个 `YYYY-MM-DD-{slug}/` 目录，含 brainstorm / design / checklist / acceptance） | 排查某功能为什么这么实现时读；新功能用 `cs-feat` |
-| `.codestable/issues/` | issue spec 聚合根（report / analysis / fix-note） | 排查历史 bug 时读；报 bug 用 `cs-issue` |
-| `.codestable/compound/` | 沉淀类文档（learning / trick / decision / explore），文件名 `YYYY-MM-DD-{doc_type}-{slug}.md` | 动手前搜已有经验；沉淀知识用 `cs-learn` / `cs-trick` / `cs-decide` / `cs-explore` |
-| `.codestable/tools/` | 跨工作流共享脚本（`search-yaml.py` / `validate-yaml.py`） | 检索沉淀、校验 yaml 时用 |
-| `.codestable/reference/` | 共享参考文档（`shared-conventions.md` 命名约定、`system-overview.md` 体系总览等） | 不确定文档该放哪、怎么命名时读 |
+文档约定：代码锚点写"文件 + 函数名"不写行号；决策集中编号 `D-xx`；各文档末尾"未决事项"不是现状，不要当现状实现。
 
-### 当前已有文档
-
-- **需求**：`requirements/multi-provider-dns-query.md`（多 Provider DNS 查询）、`requirements/offline-ip-lookup.md`（离线 IP / CIDR 查询），索引见 `requirements/VISION.md`
-- **架构**：`architecture/ARCHITECTURE.md`（总入口）、`architecture/dns-query.md`、`architecture/ip-lookup.md`
-
-> 注：本文件 `CLAUDE.md` 与 `AGENTS.md` 是同一份内容（`AGENTS.md` 是指向 `CLAUDE.md` 的软链接），修改实际文件 `CLAUDE.md` 即可。CodeStable 子技能的启动注意事项入口固定为 `.codestable/attention.md`，不依赖本文件。
+> 注：本文件 `CLAUDE.md` 与 `AGENTS.md` 是同一份内容（`AGENTS.md` 是指向 `CLAUDE.md` 的软链接），修改实际文件 `CLAUDE.md` 即可，不要新建 `AGENTS.md`。
 
